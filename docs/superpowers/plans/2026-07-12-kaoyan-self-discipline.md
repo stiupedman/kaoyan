@@ -13,7 +13,7 @@
 - 仅支持 Windows，无需管理员权限，不安装服务、驱动或自定义登录组件。
 - 锁定窗口阻止普通关闭和 Alt+F4，但不拦截 Ctrl+Alt+Delete、任务管理器、关机或管理员操作。
 - 数据只保存到 `%LocalAppData%\KaoyanFocus\state.json`。
-- 网络只访问教育部官方页面；失败时使用有效缓存或手动日期。
+- 网络只访问教育部官方页面；每 24 小时最多检查一次，每次最多两次 HTTP 请求且不连续重试，失败时使用有效缓存或手动日期。
 - 任务开始后不能新增、删除、改名或缩短。
 - 任务必须同时满足累计时长达标和手动确认才算完成。
 - 每个本地自然日恰有两次应急解锁机会；应急期间暂停计时，直到用户手动返回。
@@ -134,6 +134,7 @@ public sealed class AppState
     public string ExamDateSource { get; set; } = "none";
     public string? ExamDateUrl { get; set; }
     public DateTimeOffset? ExamDateUpdatedAt { get; set; }
+    public DateTimeOffset? ExamDateCheckedAt { get; set; }
     public List<StudyTask> Tasks { get; set; } = [];
     public List<DailyRecord> Archive { get; set; } = [];
     public bool Started { get; set; }
@@ -395,14 +396,12 @@ public sealed partial class ExamDateProvider(HttpClient http)
     public async Task<ExamDateResult?> FetchAsync(DateOnly today, CancellationToken cancellationToken)
     {
         var listing = await http.GetStringAsync(ListingUrl, cancellationToken);
-        foreach (Match match in AnnouncementLink().Matches(listing))
-        {
-            var url = new Uri(new Uri(ListingUrl), match.Groups["url"].Value).ToString();
-            var html = await http.GetStringAsync(url, cancellationToken);
-            var date = TryParseDate(html, today);
-            if (date is not null) return new(date.Value, url);
-        }
-        return null;
+        var match = AnnouncementLink().Match(listing);
+        if (!match.Success) return null;
+        var url = new Uri(new Uri(ListingUrl), match.Groups["url"].Value).ToString();
+        var html = await http.GetStringAsync(url, cancellationToken);
+        var date = TryParseDate(html, today);
+        return date is null ? null : new(date.Value, url);
     }
 }
 ```
@@ -604,7 +603,7 @@ public partial class App : Application
         state = store.LoadOrCreate(today);
         if (state.Started && !state.EmergencyMode && !FocusRules.AllTasksComplete(state)) { ShowLock(); return; }
         ShowMain();
-        if (state.ExamDateSource != "official" || state.ExamDate is null || state.ExamDate < today)
+        if (state.ExamDateCheckedAt is null || DateTimeOffset.Now - state.ExamDateCheckedAt >= TimeSpan.FromHours(24))
             await RefreshExamDate(today);
     }
 
@@ -630,17 +629,24 @@ public partial class App : Application
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("KaoyanFocus/1.0");
             var result = await new ExamDateProvider(http).FetchAsync(today, CancellationToken.None);
-            if (result is null) return;
-            state.ExamDate = result.Date;
-            state.ExamDateSource = "official";
-            state.ExamDateUrl = result.Url;
-            state.ExamDateUpdatedAt = DateTimeOffset.Now;
+            if (result is not null)
+            {
+                state.ExamDate = result.Date;
+                state.ExamDateSource = "official";
+                state.ExamDateUrl = result.Url;
+                state.ExamDateUpdatedAt = DateTimeOffset.Now;
+            }
+            state.ExamDateCheckedAt = DateTimeOffset.Now;
             store.Save(state);
             if (MainWindow is KaoyanFocus.MainWindow main) main.RefreshView();
         }
-        catch (HttpRequestException) { }
-        catch (TaskCanceledException) { }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            state.ExamDateCheckedAt = DateTimeOffset.Now;
+            store.Save(state);
+        }
     }
 }
 ```
@@ -958,17 +964,18 @@ In `App.xaml.cs`, hold a named mutex for the process lifetime:
 
 ```csharp
 Mutex? instanceMutex;
+bool ownsInstanceMutex;
 
 protected override async void OnStartup(StartupEventArgs e)
 {
-    instanceMutex = new Mutex(true, "KaoyanFocus.SingleInstance", out var created);
-    if (!created) { MessageBox.Show("考研自律神器已经在运行。"); Shutdown(); return; }
+    instanceMutex = new Mutex(true, "KaoyanFocus.SingleInstance", out ownsInstanceMutex);
+    if (!ownsInstanceMutex) { MessageBox.Show("考研自律神器已经在运行。"); Shutdown(); return; }
     // Continue with the Task 4 startup body.
 }
 
 protected override void OnExit(ExitEventArgs e)
 {
-    instanceMutex?.ReleaseMutex();
+    if (ownsInstanceMutex) instanceMutex?.ReleaseMutex();
     instanceMutex?.Dispose();
     base.OnExit(e);
 }
