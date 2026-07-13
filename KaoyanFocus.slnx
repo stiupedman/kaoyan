@@ -1,6 +1,8 @@
 <Solution>
   <Folder Name="/src/">
-    <Project Path="checks/KaoyanFocus.Checks/KaoyanFocus.Checks.csproj" />
     <Project Path="src/KaoyanFocus/KaoyanFocus.csproj" />
+  </Folder>
+  <Folder Name="/checks/">
+    <Project Path="checks/KaoyanFocus.Checks/KaoyanFocus.Checks.csproj" />
   </Folder>
 </Solution>

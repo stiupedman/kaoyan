@@ -44,7 +44,7 @@ public partial class App : Application
         }
 
         ShowMain();
-        if (FocusRules.ShouldRefreshExamDate(state.ExamDateCheckedAt, DateTimeOffset.Now))
+        if (FocusRules.ShouldRefreshExamDate(state.ExamDate, state.ExamDateCheckedAt, today, DateTimeOffset.Now))
             await RefreshExamDate(today);
     }
 

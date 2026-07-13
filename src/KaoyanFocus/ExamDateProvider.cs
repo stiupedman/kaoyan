@@ -20,6 +20,7 @@ public sealed partial class ExamDateProvider : IDisposable
     {
         ArgumentNullException.ThrowIfNull(handler);
         http = new HttpClient(handler, disposeHandler: true);
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("KaoyanFocus/1.0");
     }
 
     [GeneratedRegex("<a\\b[^>]*\\bhref=[\"'](?<url>[^\"']+)[\"'][^>]*>(?:(?!</a\\s*>).)*?全国硕士研究生考试招生工作", RegexOptions.Singleline | RegexOptions.IgnoreCase)]

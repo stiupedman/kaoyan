@@ -12,8 +12,18 @@ public static class FocusRules
 {
     public static int DaysUntil(DateOnly today, DateOnly exam) => exam.DayNumber - today.DayNumber;
 
+    public static bool HasUsableExamDate(AppState state, DateOnly today) =>
+        state.ExamDate is { } date && date >= today;
+
     public static bool ShouldRefreshExamDate(DateTimeOffset? checkedAt, DateTimeOffset now) =>
         checkedAt is null || now - checkedAt >= TimeSpan.FromHours(24);
+
+    public static bool ShouldRefreshExamDate(
+        DateOnly? examDate,
+        DateTimeOffset? checkedAt,
+        DateOnly today,
+        DateTimeOffset now) =>
+        examDate is { } date && date < today || ShouldRefreshExamDate(checkedAt, now);
 
     public static bool CanStart(AppState state) =>
         state.Tasks.Count > 0 && state.Tasks.All(t =>
@@ -109,6 +119,40 @@ public static class FocusRules
     }
 }
 
+public readonly record struct ExamDateDashboardDescription(
+    string DaysText,
+    string SourceText,
+    bool ShowManualDate);
+
+public static class ExamDateDashboard
+{
+    public static ExamDateDashboardDescription Describe(AppState state, DateOnly today)
+    {
+        var expired = state.ExamDate is { } examDate && examDate < today;
+        if (expired)
+        {
+            return new(
+                "待设置",
+                state.ExamDateCheckedAt is not null
+                    ? "官方日期已过期且刷新失败，请设置手动备用日期"
+                    : "官方日期已过期，正在刷新；也可设置手动备用日期",
+                true);
+        }
+
+        var daysText = state.ExamDate is { } date
+            ? $"{FocusRules.DaysUntil(today, date)} 天"
+            : "待设置";
+        var sourceText = state.ExamDateSource switch
+        {
+            "official" => "日期来源：教育部官方公告",
+            "manual" => "日期来源：手动备用",
+            _ when state.ExamDateCheckedAt is not null => "官方日期获取失败，请设置手动备用日期",
+            _ => "正在获取官方考试日期"
+        };
+        return new(daysText, sourceText, state.ExamDate is null);
+    }
+}
+
 public static class LockTaskSwitch
 {
     public static bool TrySwitch(
@@ -155,6 +199,66 @@ public static class LockModalPause
         finally
         {
             restoreTiming();
+        }
+    }
+}
+
+public static class DashboardDayTransition
+{
+    public static bool TryRoll(AppState state, DateOnly today, Action<AppState> save)
+    {
+        if (state.Day == today) return false;
+
+        var snapshot = AppStateSnapshot.Capture(state);
+        FocusRules.RollTo(state, today);
+        try
+        {
+            save(state);
+            return true;
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+        {
+            snapshot.Restore(state);
+            return false;
+        }
+    }
+
+    private sealed record AppStateSnapshot(
+        DateOnly Day,
+        List<StudyTask> Tasks,
+        List<DailyRecord> Archive,
+        bool Started,
+        bool EmergencyMode,
+        int EmergencyUses,
+        string? ActiveTaskId)
+    {
+        public static AppStateSnapshot Capture(AppState state) => new(
+            state.Day, state.Tasks.Select(CloneTask).ToList(),
+            state.Archive.Select(record => new DailyRecord
+            {
+                Day = record.Day,
+                Tasks = record.Tasks.Select(CloneTask).ToList()
+            }).ToList(), state.Started,
+            state.EmergencyMode, state.EmergencyUses, state.ActiveTaskId);
+
+        static StudyTask CloneTask(StudyTask task) => new()
+        {
+            Id = task.Id,
+            Name = task.Name,
+            TargetSeconds = task.TargetSeconds,
+            ElapsedSeconds = task.ElapsedSeconds,
+            Confirmed = task.Confirmed
+        };
+
+        public void Restore(AppState state)
+        {
+            state.Day = Day;
+            state.Tasks = Tasks;
+            state.Archive = Archive;
+            state.Started = Started;
+            state.EmergencyMode = EmergencyMode;
+            state.EmergencyUses = EmergencyUses;
+            state.ActiveTaskId = ActiveTaskId;
         }
     }
 }

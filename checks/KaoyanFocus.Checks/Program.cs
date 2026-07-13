@@ -13,13 +13,18 @@ var now = new DateTimeOffset(2026, 7, 13, 12, 0, 0, TimeSpan.FromHours(8));
 Equal(true, FocusRules.ShouldRefreshExamDate(null, now), "date never checked");
 Equal(false, FocusRules.ShouldRefreshExamDate(now.AddHours(-23), now), "date checked within 24 hours");
 Equal(true, FocusRules.ShouldRefreshExamDate(now.AddHours(-24), now), "date checked 24 hours ago");
+Equal(true, FocusRules.ShouldRefreshExamDate(today.AddDays(-1), now.AddMinutes(-1), today, now),
+    "expired date bypasses recent-check cache");
+CheckExpiredExamDateFallback();
 
 CheckTaskRowParsing();
 CheckCompletedDashboardCannotStart();
+CheckDashboardCrossDayTransitions();
 CheckLockSessionTransitions();
 CheckTaskSwitchSaveFailure();
 CheckModalTimingPause();
 CheckSingleInstanceOwnership();
+CheckInvalidStateFilesAreRecovered();
 
 Equal("24:00:00", FocusRules.FormatDuration(24 * 60 * 60), "24-hour duration does not wrap");
 Equal("25:01:01", FocusRules.FormatDuration(25 * 60 * 60 + 61), "duration uses total hours");
@@ -46,17 +51,7 @@ Equal(0, state.EmergencyUses, "daily reset");
 Equal(0, state.Tasks.Count, "old tasks archived from active day");
 Equal(1, state.Archive.Count, "archive retained");
 
-var temp = Path.Combine(Path.GetTempPath(), "KaoyanFocusChecks", Guid.NewGuid().ToString("N"));
-var store = new StateStore(Path.Combine(temp, "state.json"));
-store.Save(state);
-var loaded = store.LoadOrCreate(state.Day);
-Equal(state.Day, loaded.Day, "saved day");
-Equal(state.EmergencyUses, loaded.EmergencyUses, "saved emergency count");
-
-File.WriteAllText(Path.Combine(temp, "state.json"), "not-json");
-var recovered = store.LoadOrCreate(state.Day);
-Equal(true, recovered.RecoveryWarning, "corrupt state warning");
-Equal(true, Directory.GetFiles(temp, "state.corrupt-*.json").Length == 1, "corrupt backup");
+CheckStateStorePersistence(state);
 CheckCrossDayLoadRollsState();
 
 const string announcement = "<p>2027年全国硕士研究生招生初试时间为2026年12月19日至20日。</p>";
@@ -102,6 +97,23 @@ static void CheckTaskRowParsing()
     Equal(120, original.TargetSeconds, "invalid candidate list leaves original task unchanged");
 }
 
+static void CheckExpiredExamDateFallback()
+{
+    var today = new DateOnly(2026, 7, 12);
+    var expired = AppState.NewDay(today);
+    expired.ExamDate = today.AddDays(-1);
+    expired.ExamDateSource = "official";
+    expired.ExamDateCheckedAt = new DateTimeOffset(2026, 7, 12, 8, 0, 0, TimeSpan.FromHours(8));
+
+    var display = ExamDateDashboard.Describe(expired, today);
+    Equal("待设置", display.DaysText, "expired exam date never shows negative days");
+    Equal(true, display.ShowManualDate, "expired cache keeps manual fallback visible");
+    Equal("官方日期已过期且刷新失败，请设置手动备用日期", display.SourceText,
+        "expired recent failure is explicit");
+    Equal(false, FocusRules.HasUsableExamDate(expired, today),
+        "expired cache cannot satisfy the dashboard date requirement");
+}
+
 static void CheckCompletedDashboardCannotStart()
 {
     var completed = AppState.NewDay(new DateOnly(2026, 7, 12));
@@ -119,6 +131,50 @@ static void CheckCompletedDashboardCannotStart()
 
     completed.EmergencyMode = true;
     Equal(DashboardPrimaryAction.Resume, FocusRules.GetDashboardPrimaryAction(completed), "emergency resume takes priority");
+}
+
+static void CheckDashboardCrossDayTransitions()
+{
+    var oldDay = new DateOnly(2026, 7, 12);
+    var nextDay = oldDay.AddDays(1);
+    foreach (var emergencyMode in new[] { false, true })
+    {
+        var dashboard = AppState.NewDay(oldDay);
+        dashboard.Started = true;
+        dashboard.EmergencyMode = emergencyMode;
+        dashboard.EmergencyUses = emergencyMode ? 1 : 0;
+        dashboard.Tasks.Add(new StudyTask
+        {
+            Id = "done",
+            Name = "高数",
+            TargetSeconds = 60,
+            ElapsedSeconds = 60,
+            Confirmed = true
+        });
+
+        Equal(true, DashboardDayTransition.TryRoll(dashboard, nextDay, _ => { }),
+            $"{(emergencyMode ? "emergency" : "completed")} dashboard rolls across day");
+        Equal(nextDay, dashboard.Day, "dashboard advances local day");
+        Equal(0, dashboard.Tasks.Count, "dashboard rebuild source is cleared");
+        Equal(1, dashboard.Archive.Count, "dashboard archives prior tasks");
+        Equal(0, dashboard.EmergencyUses, "dashboard resets emergency uses");
+    }
+
+    var failed = AppState.NewDay(oldDay);
+    failed.Started = true;
+    failed.EmergencyMode = true;
+    failed.EmergencyUses = 2;
+    failed.Tasks.Add(new StudyTask { Id = "active", Name = "英语", TargetSeconds = 60 });
+    failed.ActiveTaskId = "active";
+
+    Equal(false, DashboardDayTransition.TryRoll(failed, nextDay, _ => throw new IOException("denied")),
+        "failed cross-day save is rejected");
+    Equal(oldDay, failed.Day, "failed cross-day save restores day");
+    Equal(1, failed.Tasks.Count, "failed cross-day save restores tasks");
+    Equal(0, failed.Archive.Count, "failed cross-day save restores archive");
+    Equal(true, failed.EmergencyMode, "failed cross-day save restores emergency mode");
+    Equal(2, failed.EmergencyUses, "failed cross-day save restores emergency uses");
+    Equal("active", failed.ActiveTaskId, "failed cross-day save restores active task");
 }
 
 static void CheckLockSessionTransitions()
@@ -366,18 +422,105 @@ static void CheckCrossDayLoadRollsState()
 
     var crossDayTemp = Path.Combine(
         Path.GetTempPath(), "KaoyanFocusChecks", Guid.NewGuid().ToString("N"));
-    var crossDayStore = new StateStore(Path.Combine(crossDayTemp, "state.json"));
-    crossDayStore.Save(oldState);
+    try
+    {
+        var crossDayStore = new StateStore(Path.Combine(crossDayTemp, "state.json"));
+        crossDayStore.Save(oldState);
+        var rolled = crossDayStore.LoadOrCreate(nextDay);
 
-    var rolled = crossDayStore.LoadOrCreate(nextDay);
+        Equal(nextDay, rolled.Day, "cross-day loaded day");
+        Equal(0, rolled.Tasks.Count, "cross-day active tasks cleared");
+        Equal(1, rolled.Archive.Count, "cross-day old tasks archived");
+        Equal(oldDay, rolled.Archive[0].Day, "cross-day archive day");
+        Equal(1, rolled.Archive[0].Tasks.Count, "cross-day archived task count");
+        Equal("英语", rolled.Archive[0].Tasks[0].Name, "cross-day archived task");
+        Equal(0, rolled.EmergencyUses, "cross-day emergency count reset");
+    }
+    finally
+    {
+        if (Directory.Exists(crossDayTemp)) Directory.Delete(crossDayTemp, true);
+    }
+}
 
-    Equal(nextDay, rolled.Day, "cross-day loaded day");
-    Equal(0, rolled.Tasks.Count, "cross-day active tasks cleared");
-    Equal(1, rolled.Archive.Count, "cross-day old tasks archived");
-    Equal(oldDay, rolled.Archive[0].Day, "cross-day archive day");
-    Equal(1, rolled.Archive[0].Tasks.Count, "cross-day archived task count");
-    Equal("英语", rolled.Archive[0].Tasks[0].Name, "cross-day archived task");
-    Equal(0, rolled.EmergencyUses, "cross-day emergency count reset");
+static void CheckStateStorePersistence(AppState state)
+{
+    var temp = Path.Combine(Path.GetTempPath(), "KaoyanFocusChecks", Guid.NewGuid().ToString("N"));
+    var originalDirectory = Environment.CurrentDirectory;
+    try
+    {
+        Directory.CreateDirectory(temp);
+        Environment.CurrentDirectory = temp;
+        var store = new StateStore("state.json");
+        store.Save(state);
+        var loaded = store.LoadOrCreate(state.Day);
+        Equal(state.Day, loaded.Day, "relative state path saved day");
+        Equal(state.EmergencyUses, loaded.EmergencyUses, "saved emergency count");
+
+        for (var index = 0; index < 2; index++)
+        {
+            File.WriteAllText(Path.Combine(temp, "state.json"), "not-json");
+            var recovered = store.LoadOrCreate(state.Day);
+            Equal(true, recovered.RecoveryWarning, $"corrupt state warning {index}");
+        }
+        Equal(2, Directory.GetFiles(temp, "state.corrupt-*.json").Length,
+            "rapid corrupt backups are unique and never overwritten");
+    }
+    finally
+    {
+        Environment.CurrentDirectory = originalDirectory;
+        if (Directory.Exists(temp)) Directory.Delete(temp, true);
+    }
+}
+
+static void CheckInvalidStateFilesAreRecovered()
+{
+    var today = new DateOnly(2026, 7, 12);
+    var temp = Path.Combine(Path.GetTempPath(), "KaoyanFocusChecks", Guid.NewGuid().ToString("N"));
+    try
+    {
+        var invalidStates = new Dictionary<string, string>
+        {
+            ["null tasks"] = """{"Day":"2026-07-12","Tasks":null,"Archive":[]}""",
+            ["null archive"] = """{"Day":"2026-07-12","Tasks":[],"Archive":null}""",
+            ["empty id"] = """{"Day":"2026-07-12","Tasks":[{"Id":"","Name":"高数","TargetSeconds":60}],"Archive":[]}""",
+            ["duplicate id"] = """{"Day":"2026-07-12","Tasks":[{"Id":"x","Name":"高数","TargetSeconds":60},{"Id":"x","Name":"英语","TargetSeconds":60}],"Archive":[]}""",
+            ["empty name"] = """{"Day":"2026-07-12","Tasks":[{"Id":"x","Name":" ","TargetSeconds":60}],"Archive":[]}""",
+            ["short target"] = """{"Day":"2026-07-12","Tasks":[{"Id":"x","Name":"高数","TargetSeconds":59}],"Archive":[]}""",
+            ["negative elapsed"] = """{"Day":"2026-07-12","Tasks":[{"Id":"x","Name":"高数","TargetSeconds":60,"ElapsedSeconds":-1}],"Archive":[]}""",
+            ["elapsed over target"] = """{"Day":"2026-07-12","Tasks":[{"Id":"x","Name":"高数","TargetSeconds":60,"ElapsedSeconds":61}],"Archive":[]}""",
+            ["early confirmation"] = """{"Day":"2026-07-12","Tasks":[{"Id":"x","Name":"高数","TargetSeconds":60,"ElapsedSeconds":59,"Confirmed":true}],"Archive":[]}""",
+            ["emergency underflow"] = """{"Day":"2026-07-12","Tasks":[],"Archive":[],"EmergencyUses":-1}""",
+            ["emergency overflow"] = """{"Day":"2026-07-12","Tasks":[],"Archive":[],"EmergencyUses":3}""",
+            ["started without tasks"] = """{"Day":"2026-07-12","Tasks":[],"Archive":[],"Started":true}""",
+            ["missing active task"] = """{"Day":"2026-07-12","Tasks":[{"Id":"x","Name":"高数","TargetSeconds":60}],"Archive":[],"Started":true,"ActiveTaskId":"missing"}"""
+        };
+
+        foreach (var (name, json) in invalidStates)
+        {
+            var path = Path.Combine(temp, name.Replace(' ', '-') + ".json");
+            Directory.CreateDirectory(temp);
+            File.WriteAllText(path, json);
+            var recovered = new StateStore(path).LoadOrCreate(today);
+            Equal(true, recovered.RecoveryWarning, $"invalid state recovered: {name}");
+            Equal(1, Directory.GetFiles(temp, Path.GetFileNameWithoutExtension(path) + ".corrupt-*.json").Length,
+                $"invalid state backed up: {name}");
+        }
+
+        var crashPath = Path.Combine(temp, "legal-crash.json");
+        var crash = AppState.NewDay(today);
+        crash.Started = true;
+        crash.Tasks.Add(new StudyTask { Id = "active", Name = "英语", TargetSeconds = 600, ElapsedSeconds = 120 });
+        crash.ActiveTaskId = "active";
+        var crashStore = new StateStore(crashPath);
+        crashStore.Save(crash);
+        var loaded = crashStore.LoadOrCreate(today);
+        Equal(false, loaded.RecoveryWarning, "legal crash state remains recoverable");
+        Equal("active", loaded.ActiveTaskId, "legal crash active task retained");
+    }
+    finally
+    {
+        if (Directory.Exists(temp)) Directory.Delete(temp, true);
+    }
 }
 
 static async Task CheckFetchRequestBoundaryAsync(DateOnly today)
@@ -396,6 +539,8 @@ static async Task CheckFetchRequestBoundaryAsync(DateOnly today)
 
     Equal(new DateOnly(2026, 12, 19), result?.Date, "fetched official date");
     Equal(2, officialHandler.RequestCount, "at most listing and first candidate requested");
+    Equal("KaoyanFocus/1.0,KaoyanFocus/1.0", string.Join(',', officialHandler.UserAgents),
+        "listing and announcement requests identify the app");
 
     var multipleAnchorHandler = new StubHttpMessageHandler(request => request.RequestUri!.AbsoluteUri switch
     {
@@ -450,12 +595,14 @@ sealed class StubHttpMessageHandler : HttpMessageHandler
         this.response = response;
 
     public int RequestCount { get; private set; }
+    public List<string> UserAgents { get; } = [];
 
     protected override Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
         RequestCount++;
+        UserAgents.Add(request.Headers.UserAgent.ToString());
         return Task.FromResult(response(request));
     }
 }

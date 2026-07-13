@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 
 namespace KaoyanFocus;
 
@@ -11,6 +12,7 @@ public partial class MainWindow : Window
     readonly AppState state;
     readonly StateStore store;
     readonly ObservableCollection<TaskRow> rows = [];
+    readonly DispatcherTimer dayTimer = new() { Interval = TimeSpan.FromMinutes(1) };
 
     public event Action? StartRequested;
     public event Action? ResumeRequested;
@@ -20,28 +22,60 @@ public partial class MainWindow : Window
         InitializeComponent();
         this.state = state;
         this.store = store;
+        RebuildRows();
+        TaskList.ItemsSource = rows;
+        dayTimer.Tick += DayTimer_Tick;
+        dayTimer.Start();
+        Activated += MainWindow_Activated;
+        Closed += MainWindow_Closed;
+        RefreshView();
+    }
+
+    void DayTimer_Tick(object? sender, EventArgs e) => CheckForNewDay();
+
+    void MainWindow_Activated(object? sender, EventArgs e) => CheckForNewDay();
+
+    void MainWindow_Closed(object? sender, EventArgs e)
+    {
+        dayTimer.Stop();
+        dayTimer.Tick -= DayTimer_Tick;
+        Activated -= MainWindow_Activated;
+        Closed -= MainWindow_Closed;
+    }
+
+    void CheckForNewDay()
+    {
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        if (state.Day == today) return;
+
+        if (!DashboardDayTransition.TryRoll(state, today, store.Save))
+        {
+            ShowPersistenceError("跨日状态保存失败，已保留原状态；请检查磁盘空间或文件权限后重试。");
+            RefreshView();
+            return;
+        }
+
+        RebuildRows();
+        ErrorText.Text = "";
+        RefreshView();
+    }
+
+    void RebuildRows()
+    {
+        rows.Clear();
         foreach (var task in state.Tasks)
             rows.Add(new TaskRow(task));
-        TaskList.ItemsSource = rows;
-        RefreshView();
     }
 
     public void RefreshView()
     {
         var completed = FocusRules.AllTasksComplete(state);
         var primaryAction = FocusRules.GetDashboardPrimaryAction(state);
-        DaysText.Text = state.ExamDate is { } date
-            ? $"{FocusRules.DaysUntil(DateOnly.FromDateTime(DateTime.Today), date)} 天"
-            : "待设置";
-        DateSourceText.Text = state.ExamDateSource switch
-        {
-            "official" => "日期来源：教育部官方公告",
-            "manual" => "日期来源：手动备用",
-            _ when state.ExamDateCheckedAt is not null => "官方日期获取失败，请设置手动备用日期",
-            _ => "正在获取官方考试日期"
-        };
+        var exam = ExamDateDashboard.Describe(state, DateOnly.FromDateTime(DateTime.Today));
+        DaysText.Text = exam.DaysText;
+        DateSourceText.Text = exam.SourceText;
         EmergencyText.Text = $"今日剩余应急解锁：{Math.Max(0, 2 - state.EmergencyUses)} 次";
-        ManualDatePanel.Visibility = state.ExamDate is null ? Visibility.Visible : Visibility.Collapsed;
+        ManualDatePanel.Visibility = exam.ShowManualDate ? Visibility.Visible : Visibility.Collapsed;
         PrimaryButton.Content = primaryAction switch
         {
             DashboardPrimaryAction.Resume => "返回学习",
@@ -80,9 +114,9 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (state.ExamDate is null)
+        if (!FocusRules.HasUsableExamDate(state, DateOnly.FromDateTime(DateTime.Today)))
         {
-            ErrorText.Text = "请先等待官方日期获取，或设置备用考试日期。";
+            ErrorText.Text = "请先等待有效官方日期，或设置手动备用考试日期。";
             return;
         }
 
@@ -187,6 +221,6 @@ public static class TaskSetup
             candidates.Add(candidate);
         }
 
-        return candidates.Count > 0;
+        return FocusRules.CanStart(new AppState { Tasks = candidates });
     }
 }
