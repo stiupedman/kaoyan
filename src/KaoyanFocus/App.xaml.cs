@@ -60,6 +60,7 @@ public partial class App : Application
     void ShowMain()
     {
         var window = new MainWindow(state, store);
+        window.ExamDateRefreshRequested += today => _ = RefreshExamDate(today);
         window.StartRequested += () =>
         {
             ShowLock();

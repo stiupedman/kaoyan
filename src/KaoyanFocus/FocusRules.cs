@@ -205,7 +205,12 @@ public static class LockModalPause
 
 public static class DashboardDayTransition
 {
-    public static bool TryRoll(AppState state, DateOnly today, Action<AppState> save)
+    public static bool TryRoll(
+        AppState state,
+        DateOnly today,
+        DateTimeOffset now,
+        Action<AppState> save,
+        Action<DateOnly> requestExamDateRefresh)
     {
         if (state.Day == today) return false;
 
@@ -214,13 +219,16 @@ public static class DashboardDayTransition
         try
         {
             save(state);
-            return true;
         }
         catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
         {
             snapshot.Restore(state);
             return false;
         }
+
+        if (FocusRules.ShouldRefreshExamDate(state.ExamDate, state.ExamDateCheckedAt, today, now))
+            requestExamDateRefresh(today);
+        return true;
     }
 
     private sealed record AppStateSnapshot(

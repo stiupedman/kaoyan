@@ -16,6 +16,7 @@ public partial class MainWindow : Window
 
     public event Action? StartRequested;
     public event Action? ResumeRequested;
+    public event Action<DateOnly>? ExamDateRefreshRequested;
 
     public MainWindow(AppState state, StateStore store)
     {
@@ -48,7 +49,9 @@ public partial class MainWindow : Window
         var today = DateOnly.FromDateTime(DateTime.Today);
         if (state.Day == today) return;
 
-        if (!DashboardDayTransition.TryRoll(state, today, store.Save))
+        if (!DashboardDayTransition.TryRoll(
+                state, today, DateTimeOffset.Now, store.Save,
+                refreshDay => ExamDateRefreshRequested?.Invoke(refreshDay)))
         {
             ShowPersistenceError("跨日状态保存失败，已保留原状态；请检查磁盘空间或文件权限后重试。");
             RefreshView();

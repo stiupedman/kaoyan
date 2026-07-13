@@ -137,6 +137,7 @@ static void CheckDashboardCrossDayTransitions()
 {
     var oldDay = new DateOnly(2026, 7, 12);
     var nextDay = oldDay.AddDays(1);
+    var now = new DateTimeOffset(2026, 7, 13, 0, 1, 0, TimeSpan.FromHours(8));
     foreach (var emergencyMode in new[] { false, true })
     {
         var dashboard = AppState.NewDay(oldDay);
@@ -152,7 +153,7 @@ static void CheckDashboardCrossDayTransitions()
             Confirmed = true
         });
 
-        Equal(true, DashboardDayTransition.TryRoll(dashboard, nextDay, _ => { }),
+        Equal(true, DashboardDayTransition.TryRoll(dashboard, nextDay, now, _ => { }, _ => { }),
             $"{(emergencyMode ? "emergency" : "completed")} dashboard rolls across day");
         Equal(nextDay, dashboard.Day, "dashboard advances local day");
         Equal(0, dashboard.Tasks.Count, "dashboard rebuild source is cleared");
@@ -167,7 +168,9 @@ static void CheckDashboardCrossDayTransitions()
     failed.Tasks.Add(new StudyTask { Id = "active", Name = "英语", TargetSeconds = 60 });
     failed.ActiveTaskId = "active";
 
-    Equal(false, DashboardDayTransition.TryRoll(failed, nextDay, _ => throw new IOException("denied")),
+    var failedRefreshes = 0;
+    Equal(false, DashboardDayTransition.TryRoll(
+            failed, nextDay, now, _ => throw new IOException("denied"), _ => failedRefreshes++),
         "failed cross-day save is rejected");
     Equal(oldDay, failed.Day, "failed cross-day save restores day");
     Equal(1, failed.Tasks.Count, "failed cross-day save restores tasks");
@@ -175,6 +178,18 @@ static void CheckDashboardCrossDayTransitions()
     Equal(true, failed.EmergencyMode, "failed cross-day save restores emergency mode");
     Equal(2, failed.EmergencyUses, "failed cross-day save restores emergency uses");
     Equal("active", failed.ActiveTaskId, "failed cross-day save restores active task");
+    Equal(0, failedRefreshes, "failed cross-day save does not refresh exam date");
+
+    var expired = AppState.NewDay(oldDay);
+    expired.ExamDate = oldDay;
+    expired.ExamDateCheckedAt = now.AddMinutes(-1);
+    var refreshes = 0;
+    Equal(true, DashboardDayTransition.TryRoll(expired, nextDay, now, _ => { }, _ => refreshes++),
+        "expired exam date rolls before refresh");
+    Equal(1, refreshes, "expired exam date refreshes after successful cross-day save");
+    Equal(false, DashboardDayTransition.TryRoll(expired, nextDay, now, _ => { }, _ => refreshes++),
+        "same-day activation does not roll again");
+    Equal(1, refreshes, "timer and activation cannot duplicate the cross-day refresh");
 }
 
 static void CheckLockSessionTransitions()
