@@ -35,4 +35,35 @@ File.WriteAllText(Path.Combine(temp, "state.json"), "not-json");
 var recovered = store.LoadOrCreate(state.Day);
 Equal(true, recovered.RecoveryWarning, "corrupt state warning");
 Equal(true, Directory.GetFiles(temp, "state.corrupt-*.json").Length == 1, "corrupt backup");
+CheckCrossDayLoadRollsState();
 Console.WriteLine("All checks passed.");
+
+static void CheckCrossDayLoadRollsState()
+{
+    var oldDay = new DateOnly(2026, 7, 12);
+    var nextDay = oldDay.AddDays(1);
+    var oldState = AppState.NewDay(oldDay);
+    oldState.Tasks.Add(new StudyTask
+    {
+        Name = "英语",
+        TargetSeconds = 1800,
+        ElapsedSeconds = 600
+    });
+    FocusRules.TryUseEmergency(oldState);
+    FocusRules.TryUseEmergency(oldState);
+
+    var crossDayTemp = Path.Combine(
+        Path.GetTempPath(), "KaoyanFocusChecks", Guid.NewGuid().ToString("N"));
+    var crossDayStore = new StateStore(Path.Combine(crossDayTemp, "state.json"));
+    crossDayStore.Save(oldState);
+
+    var rolled = crossDayStore.LoadOrCreate(nextDay);
+
+    Equal(nextDay, rolled.Day, "cross-day loaded day");
+    Equal(0, rolled.Tasks.Count, "cross-day active tasks cleared");
+    Equal(1, rolled.Archive.Count, "cross-day old tasks archived");
+    Equal(oldDay, rolled.Archive[0].Day, "cross-day archive day");
+    Equal(1, rolled.Archive[0].Tasks.Count, "cross-day archived task count");
+    Equal("英语", rolled.Archive[0].Tasks[0].Name, "cross-day archived task");
+    Equal(0, rolled.EmergencyUses, "cross-day emergency count reset");
+}
