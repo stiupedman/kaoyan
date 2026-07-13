@@ -19,6 +19,7 @@ CheckCompletedDashboardCannotStart();
 CheckLockSessionTransitions();
 CheckTaskSwitchSaveFailure();
 CheckModalTimingPause();
+CheckSingleInstanceOwnership();
 
 Equal("24:00:00", FocusRules.FormatDuration(24 * 60 * 60), "24-hour duration does not wrap");
 Equal("25:01:01", FocusRules.FormatDuration(25 * 60 * 60 + 61), "duration uses total hours");
@@ -308,6 +309,17 @@ static void CheckModalTimingPause()
     Equal(0, nestedTicks, "modal nested loop cannot tick while timing is paused");
     Equal(true, timerRunning, "dispatcher timer restored after modal");
     Equal(true, stopwatchRunning, "stopwatch restored after modal");
+}
+
+static void CheckSingleInstanceOwnership()
+{
+    var releaseCount = 0;
+
+    SingleInstanceOwnership.ReleaseIfOwned(true, () => releaseCount++);
+    Equal(1, releaseCount, "single-instance owner releases mutex");
+
+    SingleInstanceOwnership.ReleaseIfOwned(false, () => releaseCount++);
+    Equal(1, releaseCount, "single-instance non-owner does not release mutex");
 }
 
 static void CheckCrossDayLoadRollsState()

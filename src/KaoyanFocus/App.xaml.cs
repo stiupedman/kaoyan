@@ -8,10 +8,20 @@ public partial class App : Application
 {
     readonly StateStore store = new(StateStore.DefaultPath);
     AppState state = null!;
+    Mutex? instanceMutex;
+    bool ownsInstanceMutex;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        instanceMutex = new Mutex(true, "KaoyanFocus.SingleInstance", out ownsInstanceMutex);
+        if (!ownsInstanceMutex)
+        {
+            MessageBox.Show("考研自律神器已经在运行。");
+            Shutdown();
+            return;
+        }
+
         var today = DateOnly.FromDateTime(DateTime.Today);
         state = store.LoadOrCreate(today);
         if (state.Started && !state.EmergencyMode && !FocusRules.AllTasksComplete(state))
@@ -23,6 +33,15 @@ public partial class App : Application
         ShowMain();
         if (FocusRules.ShouldRefreshExamDate(state.ExamDateCheckedAt, DateTimeOffset.Now))
             await RefreshExamDate(today);
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        SingleInstanceOwnership.ReleaseIfOwned(
+            ownsInstanceMutex,
+            () => instanceMutex?.ReleaseMutex());
+        instanceMutex?.Dispose();
+        base.OnExit(e);
     }
 
     void ShowMain()
@@ -118,5 +137,13 @@ public partial class App : Application
             if (!saveFailed && MainWindow is KaoyanFocus.MainWindow main)
                 main.RefreshView();
         }
+    }
+}
+
+public static class SingleInstanceOwnership
+{
+    public static void ReleaseIfOwned(bool ownsMutex, Action release)
+    {
+        if (ownsMutex) release();
     }
 }
