@@ -39,22 +39,40 @@ public partial class LockWindow : Window
     {
         if (sender is not Button { Tag: LockTaskRow row }) return;
 
-        FlushElapsed();
-        var previousTaskId = state.ActiveTaskId;
-        if (!FocusRules.TryActivateTask(state, row.Task.Id)) return;
-
-        stopwatch.Restart();
-        savedWholeSeconds = 0;
-        if (!TrySave())
-        {
-            state.ActiveTaskId = previousTaskId;
-            if (previousTaskId is null) stopwatch.Reset();
-            else stopwatch.Restart();
-            RefreshView();
-            return;
-        }
-
+        LockTaskSwitch.TrySwitch(
+            state,
+            row.Task.Id,
+            FlushElapsed,
+            StopTiming,
+            ResetTimingBaseline,
+            TrySave,
+            RestoreTiming,
+            StartNewTiming);
         RefreshView();
+    }
+
+    void StopTiming()
+    {
+        timer.Stop();
+        stopwatch.Stop();
+    }
+
+    void ResetTimingBaseline()
+    {
+        stopwatch.Reset();
+        savedWholeSeconds = 0;
+    }
+
+    void RestoreTiming(bool taskWasActive)
+    {
+        if (taskWasActive) stopwatch.Start();
+        timer.Start();
+    }
+
+    void StartNewTiming()
+    {
+        stopwatch.Start();
+        timer.Start();
     }
 
     void Timer_Tick(object? sender, EventArgs e)
@@ -111,7 +129,8 @@ public partial class LockWindow : Window
         var remaining = 2 - state.EmergencyUses;
         if (remaining <= 0) return;
 
-        var answer = MessageBox.Show(
+        FlushElapsed();
+        var answer = ShowModalMessage(
             $"本次使用后，今天还剩 {remaining - 1} 次应急解锁。确认使用吗？",
             "应急解锁", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (answer != MessageBoxResult.Yes) return;
@@ -120,18 +139,21 @@ public partial class LockWindow : Window
         var previousUses = state.EmergencyUses;
         var previousMode = state.EmergencyMode;
         var previousTaskId = state.ActiveTaskId;
-        if (!FocusRules.TryUseEmergency(state)) return;
+        var taskWasActive = previousTaskId is not null && stopwatch.IsRunning;
+        StopTiming();
+        ResetTimingBaseline();
+        if (!FocusRules.TryUseEmergency(state))
+        {
+            RestoreTiming(taskWasActive);
+            return;
+        }
 
         if (!TrySave())
         {
             state.EmergencyUses = previousUses;
             state.EmergencyMode = previousMode;
             state.ActiveTaskId = previousTaskId;
-            if (previousTaskId is not null)
-            {
-                stopwatch.Restart();
-                savedWholeSeconds = 0;
-            }
+            RestoreTiming(taskWasActive);
             RefreshView();
             return;
         }
@@ -167,7 +189,7 @@ public partial class LockWindow : Window
             : "待设置";
         CurrentTaskText.Text = active?.Name ?? "请选择一项任务";
         var remaining = active is null ? 0 : Math.Max(0, active.TargetSeconds - active.ElapsedSeconds);
-        TimerText.Text = TimeSpan.FromSeconds(remaining).ToString(@"hh\:mm\:ss");
+        TimerText.Text = FocusRules.FormatDuration(remaining);
         ConfirmButton.IsEnabled = active is not null && active.ElapsedSeconds >= active.TargetSeconds;
         EmergencyButton.Content = $"应急解锁（剩余 {Math.Max(0, 2 - state.EmergencyUses)} 次）";
         EmergencyButton.IsEnabled = state.EmergencyUses < 2;
@@ -188,12 +210,30 @@ public partial class LockWindow : Window
             if (!persistenceWarningShown)
             {
                 persistenceWarningShown = true;
-                MessageBox.Show(
+                ShowModalMessage(
                     "保存学习进度失败。专注窗口将保持打开，请检查磁盘空间或文件权限后重试。",
                     "保存失败", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             return false;
         }
+    }
+
+    MessageBoxResult ShowModalMessage(
+        string message,
+        string caption,
+        MessageBoxButton buttons,
+        MessageBoxImage image)
+    {
+        var timerWasRunning = timer.IsEnabled;
+        var stopwatchWasRunning = stopwatch.IsRunning;
+        return LockModalPause.Run(
+            StopTiming,
+            () => MessageBox.Show(message, caption, buttons, image),
+            () =>
+            {
+                if (stopwatchWasRunning) stopwatch.Start();
+                if (timerWasRunning) timer.Start();
+            });
     }
 
     void ExitToMain()

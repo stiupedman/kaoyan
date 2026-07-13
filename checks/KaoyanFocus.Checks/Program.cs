@@ -17,6 +17,11 @@ Equal(true, FocusRules.ShouldRefreshExamDate(now.AddHours(-24), now), "date chec
 CheckTaskRowParsing();
 CheckCompletedDashboardCannotStart();
 CheckLockSessionTransitions();
+CheckTaskSwitchSaveFailure();
+CheckModalTimingPause();
+
+Equal("24:00:00", FocusRules.FormatDuration(24 * 60 * 60), "24-hour duration does not wrap");
+Equal("25:01:01", FocusRules.FormatDuration(25 * 60 * 60 + 61), "duration uses total hours");
 
 var state = AppState.NewDay(today);
 state.Tasks.Add(new StudyTask { Name = "高数", TargetSeconds = 60, ElapsedSeconds = 60 });
@@ -146,6 +151,163 @@ static void CheckLockSessionTransitions()
     session.ActiveTaskId = second.Id;
     FocusRules.PauseActiveTask(session);
     Equal<string?>(null, session.ActiveTaskId, "pause clears active task");
+}
+
+static void CheckTaskSwitchSaveFailure()
+{
+    var session = AppState.NewDay(new DateOnly(2026, 7, 12));
+    session.Started = true;
+    var oldTask = new StudyTask { Id = "old", Name = "高数", TargetSeconds = 100, ElapsedSeconds = 10 };
+    var newTask = new StudyTask { Id = "new", Name = "英语", TargetSeconds = 100, ElapsedSeconds = 20 };
+    session.Tasks.AddRange([oldTask, newTask]);
+    session.ActiveTaskId = oldTask.Id;
+
+    var timerRunning = true;
+    var stopwatchRunning = true;
+    var baseline = 7;
+    string? nestedPersistedTaskId = null;
+    var trace = new List<string>();
+
+    var switched = LockTaskSwitch.TrySwitch(
+        session,
+        newTask.Id,
+        flushElapsed: () =>
+        {
+            trace.Add("flush-old");
+            FocusRules.AddElapsed(oldTask, 3);
+        },
+        stopTiming: () =>
+        {
+            trace.Add("stop");
+            timerRunning = false;
+            stopwatchRunning = false;
+        },
+        resetBaseline: () =>
+        {
+            trace.Add("reset");
+            baseline = 0;
+        },
+        trySave: () =>
+        {
+            trace.Add("save");
+            if (timerRunning || stopwatchRunning)
+            {
+                FocusRules.AddElapsed(newTask, 5); // models a nested Dispatcher tick
+                nestedPersistedTaskId = session.ActiveTaskId;
+            }
+            return false;
+        },
+        restoreTiming: wasActive =>
+        {
+            trace.Add($"restore:{wasActive}");
+            timerRunning = true;
+            stopwatchRunning = wasActive;
+        },
+        startNewTiming: () => trace.Add("start-new"));
+
+    Equal(false, switched, "failed save rejects task switch");
+    Equal(oldTask.Id, session.ActiveTaskId, "failed save restores old active task");
+    Equal(13, oldTask.ElapsedSeconds, "old task flushed before switch");
+    Equal(20, newTask.ElapsedSeconds, "nested save loop cannot advance new task");
+    Equal<string?>(null, nestedPersistedTaskId, "nested tick cannot persist intermediate task switch");
+    Equal(0, baseline, "failed switch leaves a clean timing baseline");
+    Equal(true, timerRunning, "failed switch restores dispatcher timer");
+    Equal(true, stopwatchRunning, "failed switch restores active stopwatch");
+    Equal("flush-old,stop,reset,save,restore:True", string.Join(',', trace), "switch failure ordering");
+
+    trace.Clear();
+    session.ActiveTaskId = oldTask.Id;
+    timerRunning = true;
+    stopwatchRunning = true;
+    switched = LockTaskSwitch.TrySwitch(
+        session,
+        newTask.Id,
+        () => trace.Add("flush-old"),
+        () =>
+        {
+            trace.Add("stop");
+            timerRunning = false;
+            stopwatchRunning = false;
+        },
+        () => trace.Add("reset"),
+        () =>
+        {
+            trace.Add($"save:{session.ActiveTaskId}:{timerRunning}:{stopwatchRunning}");
+            return true;
+        },
+        wasActive => trace.Add($"restore:{wasActive}"),
+        () =>
+        {
+            trace.Add("start-new");
+            timerRunning = true;
+            stopwatchRunning = true;
+        });
+
+    Equal(true, switched, "successful save commits task switch");
+    Equal(newTask.Id, session.ActiveTaskId, "successful save keeps new task active");
+    Equal(true, timerRunning, "successful switch starts dispatcher timer");
+    Equal(true, stopwatchRunning, "successful switch starts new stopwatch");
+    Equal(
+        "flush-old,stop,reset,save:new:False:False,start-new",
+        string.Join(',', trace),
+        "new timing starts only after persisted switch");
+
+    trace.Clear();
+    session.ActiveTaskId = null;
+    timerRunning = true;
+    stopwatchRunning = false;
+    switched = LockTaskSwitch.TrySwitch(
+        session,
+        oldTask.Id,
+        () => trace.Add("flush"),
+        () =>
+        {
+            timerRunning = false;
+            stopwatchRunning = false;
+        },
+        () => { },
+        () => false,
+        wasActive =>
+        {
+            trace.Add($"restore:{wasActive}");
+            timerRunning = true;
+            stopwatchRunning = wasActive;
+        },
+        () => throw new Exception("new timing must not start after failed save"));
+
+    Equal(false, switched, "inactive failed save rejects task switch");
+    Equal<string?>(null, session.ActiveTaskId, "inactive failed save restores no active task");
+    Equal(true, timerRunning, "inactive failure restores dispatcher timer");
+    Equal(false, stopwatchRunning, "inactive failure leaves stopwatch stopped");
+    Equal("flush,restore:False", string.Join(',', trace), "inactive timing state restored");
+}
+
+static void CheckModalTimingPause()
+{
+    var timerRunning = true;
+    var stopwatchRunning = true;
+    var nestedTicks = 0;
+    var result = LockModalPause.Run(
+        stopTiming: () =>
+        {
+            timerRunning = false;
+            stopwatchRunning = false;
+        },
+        showModal: () =>
+        {
+            if (timerRunning || stopwatchRunning) nestedTicks++;
+            return "answer";
+        },
+        restoreTiming: () =>
+        {
+            timerRunning = true;
+            stopwatchRunning = true;
+        });
+
+    Equal("answer", result, "modal result returned");
+    Equal(0, nestedTicks, "modal nested loop cannot tick while timing is paused");
+    Equal(true, timerRunning, "dispatcher timer restored after modal");
+    Equal(true, stopwatchRunning, "stopwatch restored after modal");
 }
 
 static void CheckCrossDayLoadRollsState()

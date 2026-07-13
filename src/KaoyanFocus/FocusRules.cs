@@ -41,6 +41,15 @@ public static class FocusRules
             task.ElapsedSeconds = Math.Min(task.TargetSeconds, task.ElapsedSeconds + seconds);
     }
 
+    public static string FormatDuration(int totalSeconds)
+    {
+        totalSeconds = Math.Max(0, totalSeconds);
+        var hours = totalSeconds / 3600;
+        var minutes = totalSeconds % 3600 / 60;
+        var seconds = totalSeconds % 60;
+        return $"{hours:00}:{minutes:00}:{seconds:00}";
+    }
+
     public static bool TryActivateTask(AppState state, string taskId)
     {
         var task = state.Tasks.SingleOrDefault(t => t.Id == taskId);
@@ -97,5 +106,55 @@ public static class FocusRules
         state.EmergencyMode = false;
         state.EmergencyUses = 0;
         state.ActiveTaskId = null;
+    }
+}
+
+public static class LockTaskSwitch
+{
+    public static bool TrySwitch(
+        AppState state,
+        string taskId,
+        Action flushElapsed,
+        Action stopTiming,
+        Action resetBaseline,
+        Func<bool> trySave,
+        Action<bool> restoreTiming,
+        Action startNewTiming)
+    {
+        var target = state.Tasks.SingleOrDefault(task => task.Id == taskId);
+        if (target is null || target.Confirmed) return false;
+
+        var previousTaskId = state.ActiveTaskId;
+        var wasActive = previousTaskId is not null;
+        flushElapsed();
+        stopTiming();
+        resetBaseline();
+        state.ActiveTaskId = target.Id;
+
+        if (!trySave())
+        {
+            state.ActiveTaskId = previousTaskId;
+            restoreTiming(wasActive);
+            return false;
+        }
+
+        startNewTiming();
+        return true;
+    }
+}
+
+public static class LockModalPause
+{
+    public static T Run<T>(Action stopTiming, Func<T> showModal, Action restoreTiming)
+    {
+        stopTiming();
+        try
+        {
+            return showModal();
+        }
+        finally
+        {
+            restoreTiming();
+        }
     }
 }
