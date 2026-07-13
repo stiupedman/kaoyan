@@ -1,12 +1,41 @@
-﻿<Window x:Class="KaoyanFocus.MainWindow"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:KaoyanFocus"
-        mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
-    <Grid>
-
-    </Grid>
+<Window x:Class="KaoyanFocus.MainWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ Title="考研自律神器" Width="760" Height="680" MinWidth="620" MinHeight="560"
+ Background="#EEF4FF" WindowStartupLocation="CenterScreen">
+  <ScrollViewer>
+    <Border Margin="32" Padding="28" Background="White" CornerRadius="18">
+      <StackPanel>
+        <TextBlock Text="距离考研还有" Foreground="#667085"/>
+        <TextBlock x:Name="DaysText" FontSize="52" FontWeight="Bold" Foreground="{StaticResource Accent}"/>
+        <TextBlock x:Name="DateSourceText" Foreground="#667085" Margin="0,0,0,22"/>
+        <TextBlock Text="今日任务" FontSize="22" FontWeight="SemiBold"/>
+        <ItemsControl x:Name="TaskList" Margin="0,12,0,8">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Grid Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition/>
+                  <ColumnDefinition Width="100"/>
+                  <ColumnDefinition Width="48"/>
+                </Grid.ColumnDefinitions>
+                <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" Padding="10"/>
+                <TextBox Grid.Column="1" Text="{Binding TargetMinutes, UpdateSourceTrigger=PropertyChanged}" Padding="10"/>
+                <Button Grid.Column="2" Content="删" Tag="{Binding}" Click="DeleteTask_Click" Margin="8,0,0,0"/>
+              </Grid>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+        <Button x:Name="AddTaskButton" Content="＋ 添加任务" Click="AddTask_Click" Padding="10" HorizontalAlignment="Left"/>
+        <TextBlock x:Name="EmergencyText" Margin="0,18,0,10" Foreground="#667085"/>
+        <TextBlock x:Name="ErrorText" Foreground="#C62828" Margin="0,0,0,8" TextWrapping="Wrap"/>
+        <Button x:Name="PrimaryButton" Content="开始今日学习" Click="PrimaryButton_Click"
+                Padding="16" Background="{StaticResource Accent}" Foreground="White" FontWeight="SemiBold"/>
+        <StackPanel x:Name="ManualDatePanel" Visibility="Collapsed" Margin="0,16,0,0">
+          <TextBlock Text="暂未获取官方日期，请设置备用日期"/>
+          <DatePicker x:Name="ManualDatePicker" Margin="0,8,0,0" SelectedDateChanged="ManualDateChanged"/>
+        </StackPanel>
+      </StackPanel>
+    </Border>
+  </ScrollViewer>
 </Window>

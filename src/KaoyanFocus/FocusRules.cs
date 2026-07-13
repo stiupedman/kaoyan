@@ -4,6 +4,9 @@ public static class FocusRules
 {
     public static int DaysUntil(DateOnly today, DateOnly exam) => exam.DayNumber - today.DayNumber;
 
+    public static bool ShouldRefreshExamDate(DateTimeOffset? checkedAt, DateTimeOffset now) =>
+        checkedAt is null || now - checkedAt >= TimeSpan.FromHours(24);
+
     public static bool CanStart(AppState state) =>
         state.Tasks.Count > 0 && state.Tasks.All(t =>
             !string.IsNullOrWhiteSpace(t.Name) && t.TargetSeconds >= 60);

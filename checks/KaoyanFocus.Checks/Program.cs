@@ -9,6 +9,10 @@ static void Equal<T>(T expected, T actual, string name)
 var today = new DateOnly(2026, 7, 12);
 Equal(160, FocusRules.DaysUntil(today, new DateOnly(2026, 12, 19)), "countdown");
 Equal(0, FocusRules.DaysUntil(today, today), "exam day");
+var now = new DateTimeOffset(2026, 7, 13, 12, 0, 0, TimeSpan.FromHours(8));
+Equal(true, FocusRules.ShouldRefreshExamDate(null, now), "date never checked");
+Equal(false, FocusRules.ShouldRefreshExamDate(now.AddHours(-23), now), "date checked within 24 hours");
+Equal(true, FocusRules.ShouldRefreshExamDate(now.AddHours(-24), now), "date checked 24 hours ago");
 
 var state = AppState.NewDay(today);
 state.Tasks.Add(new StudyTask { Name = "高数", TargetSeconds = 60, ElapsedSeconds = 60 });
