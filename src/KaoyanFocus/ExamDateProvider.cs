@@ -6,14 +6,26 @@ namespace KaoyanFocus;
 
 public sealed record ExamDateResult(DateOnly Date, string Url);
 
-public sealed partial class ExamDateProvider(HttpClient http)
+public sealed partial class ExamDateProvider : IDisposable
 {
     private const string ListingUrl = "https://www.moe.gov.cn/jyb_xwfb/gzdt_gzdt/s5987/";
+    private readonly HttpClient http;
 
-    [GeneratedRegex("href=[\"'](?<url>[^\"']+)[\"'][^>]*>.*?全国硕士研究生考试招生工作", RegexOptions.Singleline)]
+    public ExamDateProvider()
+        : this(new HttpClientHandler { AllowAutoRedirect = false })
+    {
+    }
+
+    public ExamDateProvider(HttpMessageHandler handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        http = new HttpClient(handler, disposeHandler: true);
+    }
+
+    [GeneratedRegex("<a\\b[^>]*\\bhref=[\"'](?<url>[^\"']+)[\"'][^>]*>(?:(?!</a\\s*>).)*?全国硕士研究生考试招生工作", RegexOptions.Singleline | RegexOptions.IgnoreCase)]
     private static partial Regex AnnouncementLink();
 
-    [GeneratedRegex("初试时间.{0,12}?(?<year>20\\d{2})年(?<month>\\d{1,2})月(?<day>\\d{1,2})日", RegexOptions.Singleline)]
+    [GeneratedRegex("初试时间(?:为|：|:|\\s)+(?<year>20\\d{2})年(?<month>\\d{1,2})月(?<day>\\d{1,2})日")]
     private static partial Regex ExamDateText();
 
     public static DateOnly? TryParseDate(string html, DateOnly today)
@@ -23,10 +35,17 @@ public sealed partial class ExamDateProvider(HttpClient http)
         if (!match.Success)
             return null;
 
-        var date = new DateOnly(
-            int.Parse(match.Groups["year"].Value),
-            int.Parse(match.Groups["month"].Value),
-            int.Parse(match.Groups["day"].Value));
+        if (!int.TryParse(match.Groups["year"].Value, out var year)
+            || !int.TryParse(match.Groups["month"].Value, out var month)
+            || !int.TryParse(match.Groups["day"].Value, out var day)
+            || month is < 1 or > 12
+            || day < 1
+            || day > DateTime.DaysInMonth(year, month))
+        {
+            return null;
+        }
+
+        var date = new DateOnly(year, month, day);
         return date >= today ? date : null;
     }
 
@@ -34,7 +53,10 @@ public sealed partial class ExamDateProvider(HttpClient http)
         DateOnly today,
         CancellationToken cancellationToken)
     {
-        var listing = await http.GetStringAsync(ListingUrl, cancellationToken);
+        var listing = await GetStringIfSuccessAsync(ListingUrl, cancellationToken);
+        if (listing is null)
+            return null;
+
         var match = AnnouncementLink().Match(listing);
         if (!match.Success)
             return null;
@@ -48,8 +70,27 @@ public sealed partial class ExamDateProvider(HttpClient http)
         }
 
         var url = candidate.ToString();
-        var html = await http.GetStringAsync(url, cancellationToken);
+        var html = await GetStringIfSuccessAsync(url, cancellationToken);
+        if (html is null)
+            return null;
+
         var date = TryParseDate(html, today);
         return date is null ? null : new ExamDateResult(date.Value, url);
+    }
+
+    public void Dispose() => http.Dispose();
+
+    private async Task<string?> GetStringIfSuccessAsync(
+        string url,
+        CancellationToken cancellationToken)
+    {
+        using var response = await http.GetAsync(
+            url,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            return null;
+
+        return await response.Content.ReadAsStringAsync(cancellationToken);
     }
 }

@@ -39,8 +39,11 @@ CheckCrossDayLoadRollsState();
 
 const string announcement = "<p>2027年全国硕士研究生招生初试时间为2026年12月19日至20日。</p>";
 Equal(new DateOnly(2026, 12, 19), ExamDateProvider.TryParseDate(announcement, today), "official date");
+Equal(today, ExamDateProvider.TryParseDate("初试时间：2026年7月12日", today), "exam day accepted");
 Equal<DateOnly?>(null, ExamDateProvider.TryParseDate("初试时间为2025年12月20日", today), "past date rejected");
 Equal<DateOnly?>(null, ExamDateProvider.TryParseDate("页面没有日期", today), "missing date");
+Equal<DateOnly?>(null, ExamDateProvider.TryParseDate("初试时间另见。报名为2026年10月1日", today), "unrelated date rejected");
+Equal<DateOnly?>(null, ExamDateProvider.TryParseDate("初试时间为2026年13月40日", today), "invalid date rejected");
 await CheckFetchRequestBoundaryAsync(today);
 Console.WriteLine("All checks passed.");
 
@@ -84,25 +87,65 @@ static async Task CheckFetchRequestBoundaryAsync(DateOnly today)
             "<p>初试时间为2026年12月19日至20日</p>",
         _ => throw new Exception($"unexpected request: {request.RequestUri}")
     });
-    var provider = new ExamDateProvider(new HttpClient(officialHandler));
+    var provider = new ExamDateProvider(officialHandler);
 
     var result = await provider.FetchAsync(today, CancellationToken.None);
 
     Equal(new DateOnly(2026, 12, 19), result?.Date, "fetched official date");
     Equal(2, officialHandler.RequestCount, "at most listing and first candidate requested");
 
+    var multipleAnchorHandler = new StubHttpMessageHandler(request => request.RequestUri!.AbsoluteUri switch
+    {
+        "https://www.moe.gov.cn/jyb_xwfb/gzdt_gzdt/s5987/" =>
+            "<a href='https://example.com/wrong'>其他公告</a>" +
+            "<a href='/jyb_xwfb/gzdt_gzdt/s5987/202610/correct.html'>全国硕士研究生考试招生工作</a>",
+        "https://www.moe.gov.cn/jyb_xwfb/gzdt_gzdt/s5987/202610/correct.html" =>
+            "<p>初试时间：2026年12月19日</p>",
+        _ => throw new Exception($"unexpected request: {request.RequestUri}")
+    });
+    provider = new ExamDateProvider(multipleAnchorHandler);
+
+    result = await provider.FetchAsync(today, CancellationToken.None);
+
+    Equal(new DateOnly(2026, 12, 19), result?.Date, "title associated with its own anchor");
+    Equal(2, multipleAnchorHandler.RequestCount, "multiple-anchor candidate fetched once");
+
     var externalHandler = new StubHttpMessageHandler(_ =>
         "<a href='https://example.com/announcement'>全国硕士研究生考试招生工作</a>");
-    provider = new ExamDateProvider(new HttpClient(externalHandler));
+    provider = new ExamDateProvider(externalHandler);
 
     result = await provider.FetchAsync(today, CancellationToken.None);
 
     Equal<ExamDateResult?>(null, result, "external candidate rejected");
     Equal(1, externalHandler.RequestCount, "external candidate not requested");
+
+    var redirectHandler = new StubHttpMessageHandler(_ => new HttpResponseMessage(System.Net.HttpStatusCode.Found)
+    {
+        Headers = { Location = new Uri("https://example.com/redirected") }
+    });
+    provider = new ExamDateProvider(redirectHandler);
+
+    result = await provider.FetchAsync(today, CancellationToken.None);
+
+    Equal<ExamDateResult?>(null, result, "external redirect rejected");
+    Equal(1, redirectHandler.RequestCount, "redirect does not add a request");
 }
 
-sealed class StubHttpMessageHandler(Func<HttpRequestMessage, string> response) : HttpMessageHandler
+sealed class StubHttpMessageHandler : HttpMessageHandler
 {
+    private readonly Func<HttpRequestMessage, HttpResponseMessage> response;
+
+    public StubHttpMessageHandler(Func<HttpRequestMessage, string> response)
+        : this(request => new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        {
+            Content = new StringContent(response(request))
+        })
+    {
+    }
+
+    public StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> response) =>
+        this.response = response;
+
     public int RequestCount { get; private set; }
 
     protected override Task<HttpResponseMessage> SendAsync(
@@ -110,9 +153,6 @@ sealed class StubHttpMessageHandler(Func<HttpRequestMessage, string> response) :
         CancellationToken cancellationToken)
     {
         RequestCount++;
-        return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
-        {
-            Content = new StringContent(response(request))
-        });
+        return Task.FromResult(response(request));
     }
 }
