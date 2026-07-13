@@ -36,6 +36,12 @@ var recovered = store.LoadOrCreate(state.Day);
 Equal(true, recovered.RecoveryWarning, "corrupt state warning");
 Equal(true, Directory.GetFiles(temp, "state.corrupt-*.json").Length == 1, "corrupt backup");
 CheckCrossDayLoadRollsState();
+
+const string announcement = "<p>2027年全国硕士研究生招生初试时间为2026年12月19日至20日。</p>";
+Equal(new DateOnly(2026, 12, 19), ExamDateProvider.TryParseDate(announcement, today), "official date");
+Equal<DateOnly?>(null, ExamDateProvider.TryParseDate("初试时间为2025年12月20日", today), "past date rejected");
+Equal<DateOnly?>(null, ExamDateProvider.TryParseDate("页面没有日期", today), "missing date");
+await CheckFetchRequestBoundaryAsync(today);
 Console.WriteLine("All checks passed.");
 
 static void CheckCrossDayLoadRollsState()
@@ -66,4 +72,47 @@ static void CheckCrossDayLoadRollsState()
     Equal(1, rolled.Archive[0].Tasks.Count, "cross-day archived task count");
     Equal("英语", rolled.Archive[0].Tasks[0].Name, "cross-day archived task");
     Equal(0, rolled.EmergencyUses, "cross-day emergency count reset");
+}
+
+static async Task CheckFetchRequestBoundaryAsync(DateOnly today)
+{
+    var officialHandler = new StubHttpMessageHandler(request => request.RequestUri!.AbsoluteUri switch
+    {
+        "https://www.moe.gov.cn/jyb_xwfb/gzdt_gzdt/s5987/" =>
+            "<a href='/jyb_xwfb/gzdt_gzdt/s5987/202610/t20261001_1.html'>全国硕士研究生考试招生工作</a>",
+        "https://www.moe.gov.cn/jyb_xwfb/gzdt_gzdt/s5987/202610/t20261001_1.html" =>
+            "<p>初试时间为2026年12月19日至20日</p>",
+        _ => throw new Exception($"unexpected request: {request.RequestUri}")
+    });
+    var provider = new ExamDateProvider(new HttpClient(officialHandler));
+
+    var result = await provider.FetchAsync(today, CancellationToken.None);
+
+    Equal(new DateOnly(2026, 12, 19), result?.Date, "fetched official date");
+    Equal(2, officialHandler.RequestCount, "at most listing and first candidate requested");
+
+    var externalHandler = new StubHttpMessageHandler(_ =>
+        "<a href='https://example.com/announcement'>全国硕士研究生考试招生工作</a>");
+    provider = new ExamDateProvider(new HttpClient(externalHandler));
+
+    result = await provider.FetchAsync(today, CancellationToken.None);
+
+    Equal<ExamDateResult?>(null, result, "external candidate rejected");
+    Equal(1, externalHandler.RequestCount, "external candidate not requested");
+}
+
+sealed class StubHttpMessageHandler(Func<HttpRequestMessage, string> response) : HttpMessageHandler
+{
+    public int RequestCount { get; private set; }
+
+    protected override Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        RequestCount++;
+        return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        {
+            Content = new StringContent(response(request))
+        });
+    }
 }
