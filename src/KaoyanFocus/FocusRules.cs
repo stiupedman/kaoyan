@@ -35,6 +35,35 @@ public static class FocusRules
         state.Tasks.Count > 0 && state.Tasks.All(t =>
             t.ElapsedSeconds >= t.TargetSeconds && t.Confirmed);
 
+    public static void AddElapsed(StudyTask task, int seconds)
+    {
+        if (seconds > 0)
+            task.ElapsedSeconds = Math.Min(task.TargetSeconds, task.ElapsedSeconds + seconds);
+    }
+
+    public static bool TryActivateTask(AppState state, string taskId)
+    {
+        var task = state.Tasks.SingleOrDefault(t => t.Id == taskId);
+        if (task is null || task.Confirmed) return false;
+        state.ActiveTaskId = task.Id;
+        return true;
+    }
+
+    public static void PauseActiveTask(AppState state) => state.ActiveTaskId = null;
+
+    public static bool TryConfirmActiveTask(AppState state)
+    {
+        var task = state.ActiveTaskId is null
+            ? null
+            : state.Tasks.SingleOrDefault(t => t.Id == state.ActiveTaskId);
+        if (task is null || task.ElapsedSeconds < task.TargetSeconds) return false;
+
+        task.Confirmed = true;
+        PauseActiveTask(state);
+        if (AllTasksComplete(state)) state.Started = false;
+        return true;
+    }
+
     public static bool TryUseEmergency(AppState state)
     {
         if (state.EmergencyUses >= 2) return false;

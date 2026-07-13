@@ -16,6 +16,7 @@ Equal(true, FocusRules.ShouldRefreshExamDate(now.AddHours(-24), now), "date chec
 
 CheckTaskRowParsing();
 CheckCompletedDashboardCannotStart();
+CheckLockSessionTransitions();
 
 var state = AppState.NewDay(today);
 state.Tasks.Add(new StudyTask { Name = "高数", TargetSeconds = 60, ElapsedSeconds = 60 });
@@ -25,6 +26,14 @@ Equal(true, FocusRules.AllTasksComplete(state), "time and confirmation");
 Equal(true, FocusRules.TryUseEmergency(state), "emergency one");
 Equal(true, FocusRules.TryUseEmergency(state), "emergency two");
 Equal(false, FocusRules.TryUseEmergency(state), "emergency limit");
+
+var timed = new StudyTask { TargetSeconds = 2 };
+FocusRules.AddElapsed(timed, 1);
+Equal(1, timed.ElapsedSeconds, "timer tick");
+FocusRules.AddElapsed(timed, 5);
+Equal(2, timed.ElapsedSeconds, "timer capped at target");
+FocusRules.AddElapsed(timed, -1);
+Equal(2, timed.ElapsedSeconds, "timer ignores non-positive elapsed time");
 
 FocusRules.RollTo(state, today.AddDays(1));
 Equal(0, state.EmergencyUses, "daily reset");
@@ -104,6 +113,39 @@ static void CheckCompletedDashboardCannotStart()
 
     completed.EmergencyMode = true;
     Equal(DashboardPrimaryAction.Resume, FocusRules.GetDashboardPrimaryAction(completed), "emergency resume takes priority");
+}
+
+static void CheckLockSessionTransitions()
+{
+    var session = AppState.NewDay(new DateOnly(2026, 7, 12));
+    session.Started = true;
+    var first = new StudyTask { Id = "first", Name = "高数", TargetSeconds = 2 };
+    var second = new StudyTask
+    {
+        Id = "second",
+        Name = "英语",
+        TargetSeconds = 2,
+        ElapsedSeconds = 2,
+        Confirmed = true
+    };
+    session.Tasks.AddRange([first, second]);
+
+    Equal(true, FocusRules.TryActivateTask(session, first.Id), "unfinished task activated");
+    Equal(first.Id, session.ActiveTaskId, "active task selected");
+    Equal(false, FocusRules.TryActivateTask(session, second.Id), "confirmed task cannot activate");
+    Equal(first.Id, session.ActiveTaskId, "rejected activation preserves active task");
+    Equal(false, FocusRules.TryConfirmActiveTask(session), "early confirmation rejected");
+    Equal(false, first.Confirmed, "early confirmation leaves task unfinished");
+
+    FocusRules.AddElapsed(first, 2);
+    Equal(true, FocusRules.TryConfirmActiveTask(session), "duration-qualified task confirmed");
+    Equal(true, first.Confirmed, "manual confirmation recorded");
+    Equal<string?>(null, session.ActiveTaskId, "confirmation pauses timer");
+    Equal(false, session.Started, "all confirmed tasks finish session");
+
+    session.ActiveTaskId = second.Id;
+    FocusRules.PauseActiveTask(session);
+    Equal<string?>(null, session.ActiveTaskId, "pause clears active task");
 }
 
 static void CheckCrossDayLoadRollsState()
