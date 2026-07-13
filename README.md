@@ -13,13 +13,14 @@ dotnet run --project src/KaoyanFocus/KaoyanFocus.csproj
 Release 构建：
 
 ```powershell
-dotnet restore src/KaoyanFocus/KaoyanFocus.csproj --runtime win-x64
+dotnet restore KaoyanFocus.slnx
 dotnet build KaoyanFocus.slnx --configuration Release --no-restore
 ```
 
 发布自包含的 win-x64 单文件程序：
 
 ```powershell
+dotnet restore src/KaoyanFocus/KaoyanFocus.csproj --runtime win-x64
 dotnet publish src/KaoyanFocus/KaoyanFocus.csproj --configuration Release --no-restore
 ```
 

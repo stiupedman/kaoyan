@@ -14,7 +14,20 @@ public partial class App : Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
-        instanceMutex = new Mutex(true, "KaoyanFocus.SingleInstance", out ownsInstanceMutex);
+        var acquisition = SingleInstanceOwnership.Acquire(() =>
+        {
+            var handle = new Mutex(true, "KaoyanFocus.SingleInstance", out var ownsMutex);
+            return (handle, ownsMutex);
+        });
+        if (!acquisition.Succeeded)
+        {
+            MessageBox.Show(acquisition.ErrorMessage, "考研自律神器", MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown();
+            return;
+        }
+
+        instanceMutex = acquisition.Handle;
+        ownsInstanceMutex = acquisition.OwnsMutex;
         if (!ownsInstanceMutex)
         {
             MessageBox.Show("考研自律神器已经在运行。");
@@ -142,8 +155,29 @@ public partial class App : Application
 
 public static class SingleInstanceOwnership
 {
+    const string AcquisitionError = "无法创建单实例保护，可能存在同名系统对象或权限不足。程序将安全退出。";
+
+    public static SingleInstanceAcquisition Acquire(Func<(Mutex Handle, bool OwnsMutex)> create)
+    {
+        try
+        {
+            var (handle, ownsMutex) = create();
+            return new(true, handle, ownsMutex, null);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or WaitHandleCannotBeOpenedException)
+        {
+            return new(false, null, false, AcquisitionError);
+        }
+    }
+
     public static void ReleaseIfOwned(bool ownsMutex, Action release)
     {
         if (ownsMutex) release();
     }
 }
+
+public readonly record struct SingleInstanceAcquisition(
+    bool Succeeded,
+    Mutex? Handle,
+    bool OwnsMutex,
+    string? ErrorMessage);

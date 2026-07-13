@@ -320,6 +320,34 @@ static void CheckSingleInstanceOwnership()
 
     SingleInstanceOwnership.ReleaseIfOwned(false, () => releaseCount++);
     Equal(1, releaseCount, "single-instance non-owner does not release mutex");
+
+    foreach (var expected in new Exception[]
+             {
+                 new UnauthorizedAccessException("denied"),
+                 new WaitHandleCannotBeOpenedException("conflict")
+             })
+    {
+        var result = SingleInstanceOwnership.Acquire(() => throw expected);
+        Equal(false, result.Succeeded, $"expected mutex failure is handled: {expected.GetType().Name}");
+        Equal<Mutex?>(null, result.Handle, $"failed mutex acquisition has no handle: {expected.GetType().Name}");
+        Equal(false, result.OwnsMutex, $"failed mutex acquisition has no ownership: {expected.GetType().Name}");
+        Equal(
+            "无法创建单实例保护，可能存在同名系统对象或权限不足。程序将安全退出。",
+            result.ErrorMessage,
+            $"expected mutex failure has a clear message: {expected.GetType().Name}");
+    }
+
+    var unknownPropagated = false;
+    try
+    {
+        SingleInstanceOwnership.Acquire(() => throw new InvalidOperationException("unknown"));
+    }
+    catch (InvalidOperationException)
+    {
+        unknownPropagated = true;
+    }
+
+    Equal(true, unknownPropagated, "unknown mutex failure is not swallowed");
 }
 
 static void CheckCrossDayLoadRollsState()
