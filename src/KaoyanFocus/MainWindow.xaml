@@ -10,18 +10,21 @@
         <TextBlock x:Name="DaysText" FontSize="52" FontWeight="Bold" Foreground="{StaticResource Accent}"/>
         <TextBlock x:Name="DateSourceText" Foreground="#667085" Margin="0,0,0,22"/>
         <TextBlock Text="今日任务" FontSize="22" FontWeight="SemiBold"/>
+        <TextBlock Text="填写任务名称和计划时长（整数分钟，至少 1 分钟）" Foreground="#667085" Margin="0,4,0,0"/>
         <ItemsControl x:Name="TaskList" Margin="0,12,0,8">
           <ItemsControl.ItemTemplate>
             <DataTemplate>
               <Grid Margin="0,0,0,8">
                 <Grid.ColumnDefinitions>
                   <ColumnDefinition/>
-                  <ColumnDefinition Width="100"/>
+                  <ColumnDefinition Width="90"/>
+                  <ColumnDefinition Width="48"/>
                   <ColumnDefinition Width="48"/>
                 </Grid.ColumnDefinitions>
                 <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" Padding="10"/>
-                <TextBox Grid.Column="1" Text="{Binding TargetMinutes, UpdateSourceTrigger=PropertyChanged}" Padding="10"/>
-                <Button Grid.Column="2" Content="删" Tag="{Binding}" Click="DeleteTask_Click" Margin="8,0,0,0"/>
+                <TextBox Grid.Column="1" Text="{Binding TargetMinutesText, UpdateSourceTrigger=PropertyChanged}" Padding="10"/>
+                <TextBlock Grid.Column="2" Text="分钟" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                <Button Grid.Column="3" Content="删" Tag="{Binding}" Click="DeleteTask_Click" Margin="8,0,0,0"/>
               </Grid>
             </DataTemplate>
           </ItemsControl.ItemTemplate>

@@ -1,5 +1,13 @@
 namespace KaoyanFocus;
 
+public enum DashboardPrimaryAction
+{
+    Start,
+    Resume,
+    Completed,
+    Unavailable
+}
+
 public static class FocusRules
 {
     public static int DaysUntil(DateOnly today, DateOnly exam) => exam.DayNumber - today.DayNumber;
@@ -10,6 +18,18 @@ public static class FocusRules
     public static bool CanStart(AppState state) =>
         state.Tasks.Count > 0 && state.Tasks.All(t =>
             !string.IsNullOrWhiteSpace(t.Name) && t.TargetSeconds >= 60);
+
+    public static bool CanStartFromDashboard(AppState state) =>
+        !state.Started && !AllTasksComplete(state);
+
+    public static DashboardPrimaryAction GetDashboardPrimaryAction(AppState state)
+    {
+        if (state.EmergencyMode) return DashboardPrimaryAction.Resume;
+        if (AllTasksComplete(state)) return DashboardPrimaryAction.Completed;
+        return CanStartFromDashboard(state)
+            ? DashboardPrimaryAction.Start
+            : DashboardPrimaryAction.Unavailable;
+    }
 
     public static bool AllTasksComplete(AppState state) =>
         state.Tasks.Count > 0 && state.Tasks.All(t =>

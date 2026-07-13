@@ -14,6 +14,9 @@ Equal(true, FocusRules.ShouldRefreshExamDate(null, now), "date never checked");
 Equal(false, FocusRules.ShouldRefreshExamDate(now.AddHours(-23), now), "date checked within 24 hours");
 Equal(true, FocusRules.ShouldRefreshExamDate(now.AddHours(-24), now), "date checked 24 hours ago");
 
+CheckTaskRowParsing();
+CheckCompletedDashboardCannotStart();
+
 var state = AppState.NewDay(today);
 state.Tasks.Add(new StudyTask { Name = "高数", TargetSeconds = 60, ElapsedSeconds = 60 });
 Equal(false, FocusRules.AllTasksComplete(state), "confirmation required");
@@ -50,6 +53,58 @@ Equal<DateOnly?>(null, ExamDateProvider.TryParseDate("初试时间另见。报�
 Equal<DateOnly?>(null, ExamDateProvider.TryParseDate("初试时间为2026年13月40日", today), "invalid date rejected");
 await CheckFetchRequestBoundaryAsync(today);
 Console.WriteLine("All checks passed.");
+
+static void CheckTaskRowParsing()
+{
+    var original = new StudyTask
+    {
+        Id = "task-1",
+        Name = "高数",
+        TargetSeconds = 120,
+        ElapsedSeconds = 75,
+        Confirmed = true
+    };
+    var valid = new TaskRow(original) { Name = "  线代  ", TargetMinutesText = "3" };
+
+    Equal(true, valid.TryCreateTask(out var candidate), "integer minutes accepted");
+    Equal("线代", candidate.Name, "task name trimmed");
+    Equal(180, candidate.TargetSeconds, "minutes converted to seconds");
+    Equal(75, candidate.ElapsedSeconds, "elapsed progress preserved");
+    Equal(true, candidate.Confirmed, "confirmation preserved");
+
+    foreach (var invalid in new[] { "", " ", "abc", "1.5", "0", "-1", "35791395", "999999999999999999999" })
+    {
+        var row = new TaskRow(original) { TargetMinutesText = invalid };
+        Equal(false, row.TryCreateTask(out _), $"invalid minutes rejected: {invalid}");
+    }
+
+    var rows = new[]
+    {
+        new TaskRow(original) { TargetMinutesText = "4" },
+        new TaskRow(new StudyTask { Name = "英语", TargetSeconds = 60 }) { TargetMinutesText = "bad" }
+    };
+    Equal(false, TaskSetup.TryBuildTasks(rows, out _), "invalid candidate list rejected atomically");
+    Equal(120, original.TargetSeconds, "invalid candidate list leaves original task unchanged");
+}
+
+static void CheckCompletedDashboardCannotStart()
+{
+    var completed = AppState.NewDay(new DateOnly(2026, 7, 12));
+    completed.Started = true;
+    completed.Tasks.Add(new StudyTask
+    {
+        Name = "高数",
+        TargetSeconds = 60,
+        ElapsedSeconds = 60,
+        Confirmed = true
+    });
+
+    Equal(false, FocusRules.CanStartFromDashboard(completed), "completed day cannot start again");
+    Equal(DashboardPrimaryAction.Completed, FocusRules.GetDashboardPrimaryAction(completed), "completed dashboard action");
+
+    completed.EmergencyMode = true;
+    Equal(DashboardPrimaryAction.Resume, FocusRules.GetDashboardPrimaryAction(completed), "emergency resume takes priority");
+}
 
 static void CheckCrossDayLoadRollsState()
 {

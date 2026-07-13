@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net.Http;
 using System.Windows;
 
@@ -34,8 +35,19 @@ public partial class App : Application
         };
         window.ResumeRequested += () =>
         {
+            var previousEmergencyMode = state.EmergencyMode;
             state.EmergencyMode = false;
-            store.Save(state);
+            try
+            {
+                store.Save(state);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                state.EmergencyMode = previousEmergencyMode;
+                window.ShowPersistenceError("保存返回学习状态失败，请检查磁盘或文件权限后重试。");
+                return;
+            }
+
             ShowLock();
             window.Close();
         };
@@ -57,11 +69,24 @@ public partial class App : Application
 
     async Task RefreshExamDate(DateOnly today)
     {
+        ExamDateResult? result = null;
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             using var provider = new ExamDateProvider();
-            var result = await provider.FetchAsync(today, timeout.Token);
+            result = await provider.FetchAsync(today, timeout.Token);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+        }
+        finally
+        {
+            var previousDate = state.ExamDate;
+            var previousSource = state.ExamDateSource;
+            var previousUrl = state.ExamDateUrl;
+            var previousUpdatedAt = state.ExamDateUpdatedAt;
+            var previousCheckedAt = state.ExamDateCheckedAt;
+            var saveFailed = false;
             if (result is not null)
             {
                 state.ExamDate = result.Date;
@@ -69,15 +94,28 @@ public partial class App : Application
                 state.ExamDateUrl = result.Url;
                 state.ExamDateUpdatedAt = DateTimeOffset.Now;
             }
-        }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-        {
-        }
-        finally
-        {
+
             state.ExamDateCheckedAt = DateTimeOffset.Now;
-            store.Save(state);
-            if (MainWindow is KaoyanFocus.MainWindow main)
+            try
+            {
+                store.Save(state);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                saveFailed = true;
+                state.ExamDate = previousDate;
+                state.ExamDateSource = previousSource;
+                state.ExamDateUrl = previousUrl;
+                state.ExamDateUpdatedAt = previousUpdatedAt;
+                state.ExamDateCheckedAt = previousCheckedAt;
+                if (MainWindow is KaoyanFocus.MainWindow failedMain)
+                {
+                    failedMain.RefreshView();
+                    failedMain.ShowPersistenceError("保存考试日期刷新结果失败，请检查磁盘或文件权限后重试。");
+                }
+            }
+
+            if (!saveFailed && MainWindow is KaoyanFocus.MainWindow main)
                 main.RefreshView();
         }
     }
