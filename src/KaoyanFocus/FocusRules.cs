@@ -4,7 +4,7 @@ public enum DashboardPrimaryAction
 {
     Start,
     Resume,
-    Completed,
+    NewRound,
     Unavailable
 }
 
@@ -35,7 +35,7 @@ public static class FocusRules
     public static DashboardPrimaryAction GetDashboardPrimaryAction(AppState state)
     {
         if (state.EmergencyMode) return DashboardPrimaryAction.Resume;
-        if (AllTasksComplete(state)) return DashboardPrimaryAction.Completed;
+        if (AllTasksComplete(state)) return DashboardPrimaryAction.NewRound;
         return CanStartFromDashboard(state)
             ? DashboardPrimaryAction.Start
             : DashboardPrimaryAction.Unavailable;
@@ -205,6 +205,28 @@ public static class LockModalPause
 
 public static class DashboardDayTransition
 {
+    public static bool TryStartNewRound(AppState state, Action<AppState> save)
+    {
+        if (state.EmergencyMode || !FocusRules.AllTasksComplete(state)) return false;
+
+        var snapshot = AppStateSnapshot.Capture(state);
+        state.Archive.Add(new DailyRecord { Day = state.Day, Tasks = snapshot.Tasks });
+        state.Tasks = [];
+        state.Started = false;
+        state.EmergencyMode = false;
+        state.ActiveTaskId = null;
+        try
+        {
+            save(state);
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+        {
+            snapshot.Restore(state);
+            return false;
+        }
+        return true;
+    }
+
     public static bool TryRoll(
         AppState state,
         DateOnly today,

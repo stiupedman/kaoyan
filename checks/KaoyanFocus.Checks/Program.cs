@@ -18,7 +18,7 @@ Equal(true, FocusRules.ShouldRefreshExamDate(today.AddDays(-1), now.AddMinutes(-
 CheckExpiredExamDateFallback();
 
 CheckTaskRowParsing();
-CheckCompletedDashboardCannotStart();
+CheckCompletedDashboardStartsNewRound();
 CheckDashboardCrossDayTransitions();
 CheckLockSessionTransitions();
 CheckTaskSwitchSaveFailure();
@@ -114,23 +114,72 @@ static void CheckExpiredExamDateFallback()
         "expired cache cannot satisfy the dashboard date requirement");
 }
 
-static void CheckCompletedDashboardCannotStart()
+static void CheckCompletedDashboardStartsNewRound()
 {
-    var completed = AppState.NewDay(new DateOnly(2026, 7, 12));
-    completed.Started = true;
+    var day = new DateOnly(2026, 7, 12);
+    var checkedAt = new DateTimeOffset(2026, 7, 12, 8, 0, 0, TimeSpan.FromHours(8));
+    var completed = AppState.NewDay(day);
+    completed.EmergencyUses = 2;
+    completed.ExamDate = new DateOnly(2026, 12, 19);
+    completed.ExamDateSource = "official";
+    completed.ExamDateCheckedAt = checkedAt;
+    completed.ActiveTaskId = "done";
+    completed.Archive.Add(new DailyRecord
+    {
+        Day = day,
+        Tasks = [new StudyTask { Id = "first-round", Name = "英语", TargetSeconds = 60 }]
+    });
     completed.Tasks.Add(new StudyTask
     {
+        Id = "done",
         Name = "高数",
         TargetSeconds = 60,
         ElapsedSeconds = 60,
         Confirmed = true
     });
 
-    Equal(false, FocusRules.CanStartFromDashboard(completed), "completed day cannot start again");
-    Equal(DashboardPrimaryAction.Completed, FocusRules.GetDashboardPrimaryAction(completed), "completed dashboard action");
+    Equal(DashboardPrimaryAction.NewRound, FocusRules.GetDashboardPrimaryAction(completed), "completed dashboard offers a new round");
 
     completed.EmergencyMode = true;
     Equal(DashboardPrimaryAction.Resume, FocusRules.GetDashboardPrimaryAction(completed), "emergency resume takes priority");
+    completed.EmergencyMode = false;
+
+    var saved = false;
+    Equal(true, DashboardDayTransition.TryStartNewRound(completed, _ => saved = true),
+        "completed round is archived before editing the next round");
+    Equal(true, saved, "new round is persisted");
+    Equal(2, completed.Archive.Count, "same-day rounds remain separate archive records");
+    Equal("first-round", completed.Archive[0].Tasks[0].Id, "prior round remains in archive");
+    Equal("done", completed.Archive[1].Tasks[0].Id, "completed round is copied into archive");
+    Equal(0, completed.Tasks.Count, "new round begins with an empty task editor");
+    Equal(false, completed.Started, "new round is not started before tasks are entered");
+    Equal(false, completed.EmergencyMode, "normal completion is not left in emergency mode");
+    Equal(2, completed.EmergencyUses, "new round preserves daily emergency uses");
+    Equal<string?>(null, completed.ActiveTaskId, "new round clears the active task");
+    Equal(new DateOnly(2026, 12, 19), completed.ExamDate, "new round preserves exam date");
+    Equal(checkedAt, completed.ExamDateCheckedAt, "new round preserves exam date check time");
+
+    completed.Started = true;
+    completed.ActiveTaskId = "failed-round";
+    completed.Tasks.Add(new StudyTask
+    {
+        Id = "failed-round",
+        Name = "政治",
+        TargetSeconds = 60,
+        ElapsedSeconds = 60,
+        Confirmed = true
+    });
+    Equal(false, DashboardDayTransition.TryStartNewRound(
+            completed, _ => throw new IOException("denied")),
+        "failed new-round save is rejected");
+    Equal(2, completed.Archive.Count, "failed save restores prior archive");
+    Equal(1, completed.Tasks.Count, "failed save restores completed tasks");
+    Equal("failed-round", completed.Tasks[0].Id, "failed save restores completed task data");
+    Equal(true, completed.Started, "failed save restores started state");
+    Equal("failed-round", completed.ActiveTaskId, "failed save restores active task");
+    Equal(2, completed.EmergencyUses, "failed save preserves daily emergency uses");
+    Equal(DashboardPrimaryAction.NewRound, FocusRules.GetDashboardPrimaryAction(completed),
+        "failed save still displays the completed round");
 }
 
 static void CheckDashboardCrossDayTransitions()

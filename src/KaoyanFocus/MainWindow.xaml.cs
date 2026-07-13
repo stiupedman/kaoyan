@@ -82,10 +82,11 @@ public partial class MainWindow : Window
         PrimaryButton.Content = primaryAction switch
         {
             DashboardPrimaryAction.Resume => "返回学习",
-            DashboardPrimaryAction.Completed => "今日任务已完成",
+            DashboardPrimaryAction.NewRound => "新增一轮",
             _ => "开始今日学习"
         };
-        PrimaryButton.IsEnabled = primaryAction is DashboardPrimaryAction.Start or DashboardPrimaryAction.Resume;
+        PrimaryButton.IsEnabled = primaryAction is DashboardPrimaryAction.Start
+            or DashboardPrimaryAction.Resume or DashboardPrimaryAction.NewRound;
         TaskList.IsEnabled = !state.Started && !completed;
         AddTaskButton.IsEnabled = !state.Started && !completed;
         if (state.RecoveryWarning)
@@ -109,11 +110,24 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (primaryAction == DashboardPrimaryAction.NewRound)
+        {
+            if (!DashboardDayTransition.TryStartNewRound(state, store.Save))
+            {
+                ShowPersistenceError("保存已完成轮次失败，请检查磁盘或文件权限后重试。");
+                RefreshView();
+                return;
+            }
+
+            RebuildRows();
+            ErrorText.Text = "";
+            RefreshView();
+            return;
+        }
+
         if (primaryAction != DashboardPrimaryAction.Start)
         {
-            ErrorText.Text = primaryAction == DashboardPrimaryAction.Completed
-                ? "今日任务已完成，明天再开始新的学习计划。"
-                : "今日学习已经开始。";
+            ErrorText.Text = "今日学习已经开始。";
             return;
         }
 
