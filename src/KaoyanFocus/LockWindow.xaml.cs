@@ -8,6 +8,13 @@ using Microsoft.Win32;
 
 namespace KaoyanFocus;
 
+public enum FocusUnlockReason
+{
+    Completed,
+    Emergency,
+    DayChanged
+}
+
 public partial class LockWindow : Window
 {
     readonly AppState state;
@@ -16,28 +23,41 @@ public partial class LockWindow : Window
     readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(1) };
     bool allowClose;
     bool persistenceWarningShown;
+    bool modalOpen;
     int savedWholeSeconds;
     int ticks;
+    bool idlePaused;
+    DisplayMonitor monitor;
 
-    public event Action? Unlocked;
+    public event Action<FocusUnlockReason>? Unlocked;
 
-    public LockWindow(AppState state, StateStore store)
+    public LockWindow(AppState state, StateStore store, DisplayMonitor monitor)
     {
         InitializeComponent();
         this.state = state;
         this.store = store;
+        this.monitor = monitor;
         FocusRules.PauseActiveTask(state);
         TaskList.ItemsSource = state.Tasks.Select(task => new LockTaskRow(task)).ToList();
         timer.Tick += Timer_Tick;
         timer.Start();
         SystemEvents.PowerModeChanged += PowerModeChanged;
         Closed += Window_Closed;
+        SourceInitialized += (_, _) => MoveToMonitor(monitor);
+        Loaded += (_, _) => MoveToMonitor(monitor);
         RefreshView();
+    }
+
+    public void MoveToMonitor(DisplayMonitor value)
+    {
+        monitor = value;
+        WindowProtection.FillMonitor(this, monitor, true);
     }
 
     void Task_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: LockTaskRow row }) return;
+        SetIdlePaused(false);
 
         LockTaskSwitch.TrySwitch(
             state,
@@ -65,13 +85,13 @@ public partial class LockWindow : Window
 
     void RestoreTiming(bool taskWasActive)
     {
-        if (taskWasActive) stopwatch.Start();
+        if (taskWasActive && !idlePaused) stopwatch.Start();
         timer.Start();
     }
 
     void StartNewTiming()
     {
-        stopwatch.Start();
+        if (!idlePaused) stopwatch.Start();
         timer.Start();
     }
 
@@ -82,13 +102,13 @@ public partial class LockWindow : Window
         {
             FlushElapsed();
             FocusRules.RollTo(state, today);
-            ExitToMain();
+            ExitToMain(FocusUnlockReason.DayChanged);
             return;
         }
 
         if (!state.Started || FocusRules.AllTasksComplete(state))
         {
-            ExitToMain();
+            ExitToMain(FocusUnlockReason.Completed);
             return;
         }
 
@@ -116,7 +136,7 @@ public partial class LockWindow : Window
         savedWholeSeconds = 0;
         if (FocusRules.AllTasksComplete(state))
         {
-            ExitToMain();
+            ExitToMain(FocusUnlockReason.Completed);
             return;
         }
 
@@ -158,7 +178,7 @@ public partial class LockWindow : Window
             return;
         }
 
-        CompleteExit();
+        CompleteExit(FocusUnlockReason.Emergency);
     }
 
     void PowerModeChanged(object sender, PowerModeChangedEventArgs e)
@@ -177,6 +197,30 @@ public partial class LockWindow : Window
         RefreshView();
     }
 
+    public void SetIdlePaused(bool paused)
+    {
+        if (modalOpen) return;
+        if (idlePaused == paused) return;
+        if (paused)
+        {
+            FlushElapsed();
+            stopwatch.Stop();
+            TrySave();
+        }
+        else if (state.ActiveTaskId is not null)
+        {
+            stopwatch.Start();
+        }
+
+        idlePaused = paused;
+        RefreshView();
+    }
+
+    public void ShowProtectionNotice(string message)
+    {
+        ProtectionStatusText.Text = message;
+    }
+
     StudyTask? ActiveTask() => state.ActiveTaskId is null
         ? null
         : state.Tasks.SingleOrDefault(task => task.Id == state.ActiveTaskId);
@@ -188,6 +232,10 @@ public partial class LockWindow : Window
             ? $"{FocusRules.DaysUntil(DateOnly.FromDateTime(DateTime.Today), exam)} 天"
             : "待设置";
         CurrentTaskText.Text = active?.Name ?? "请选择一项任务";
+        if (idlePaused)
+            ProtectionStatusText.Text = "检测到离座，当前任务计时已暂停；操作键盘或鼠标后自动继续。";
+        else if (ProtectionStatusText.Text.StartsWith("检测到离座", StringComparison.Ordinal))
+            ProtectionStatusText.Text = "已恢复计时。";
         var remaining = active is null ? 0 : Math.Max(0, active.TargetSeconds - active.ElapsedSeconds);
         TimerText.Text = FocusRules.FormatDuration(remaining);
         ConfirmButton.IsEnabled = active is not null && active.ElapsedSeconds >= active.TargetSeconds;
@@ -226,17 +274,25 @@ public partial class LockWindow : Window
     {
         var timerWasRunning = timer.IsEnabled;
         var stopwatchWasRunning = stopwatch.IsRunning;
-        return LockModalPause.Run(
-            StopTiming,
-            () => MessageBox.Show(message, caption, buttons, image),
-            () =>
-            {
-                if (stopwatchWasRunning) stopwatch.Start();
-                if (timerWasRunning) timer.Start();
-            });
+        modalOpen = true;
+        try
+        {
+            return LockModalPause.Run(
+                StopTiming,
+                () => MessageBox.Show(message, caption, buttons, image),
+                () =>
+                {
+                    if (stopwatchWasRunning) stopwatch.Start();
+                    if (timerWasRunning) timer.Start();
+                });
+        }
+        finally
+        {
+            modalOpen = false;
+        }
     }
 
-    void ExitToMain()
+    void ExitToMain(FocusUnlockReason reason)
     {
         FlushElapsed();
         stopwatch.Stop();
@@ -246,15 +302,15 @@ public partial class LockWindow : Window
             return;
         }
 
-        CompleteExit();
+        CompleteExit(reason);
     }
 
-    void CompleteExit()
+    void CompleteExit(FocusUnlockReason reason)
     {
         stopwatch.Stop();
         timer.Stop();
         allowClose = true;
-        Unlocked?.Invoke();
+        Unlocked?.Invoke(reason);
         if (IsVisible) Close();
     }
 

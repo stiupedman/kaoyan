@@ -55,7 +55,7 @@ static class StateStructure
 {
     public static void Validate(AppState state)
     {
-        if (state.Tasks is null || state.Archive is null)
+        if (state.Tasks is null || state.Archive is null || state.StrictMode is null)
             Invalid("Task collections cannot be null.");
         if (state.EmergencyUses is < 0 or > 2)
             Invalid("Emergency uses are outside the daily limit.");
@@ -72,6 +72,10 @@ static class StateStructure
             Invalid("A started session requires tasks.");
         if (state.ActiveTaskId is not null && state.Tasks.All(task => task.Id != state.ActiveTaskId))
             Invalid("The active task must exist.");
+        if (state.StrictMode.IdleTimeoutMinutes is < 1 or > 120 ||
+            state.StrictMode.BlockedProcesses is null || state.StrictMode.BlockedProcesses.Count > 64 ||
+            state.StrictMode.BlockedProcesses.Any(name => string.IsNullOrWhiteSpace(name) || name.Length > 128))
+            Invalid("Strict mode settings are invalid.");
     }
 
     static void ValidateTasks(IEnumerable<StudyTask> tasks, string context)

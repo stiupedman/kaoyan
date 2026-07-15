@@ -15,8 +15,23 @@ public sealed class AppState
     public int EmergencyUses { get; set; }
     public string? ActiveTaskId { get; set; }
     public bool RecoveryWarning { get; set; }
+    public StrictModeSettings StrictMode { get; set; } = new();
 
     public static AppState NewDay(DateOnly day) => new() { Day = day };
+}
+
+public sealed class StrictModeSettings
+{
+    public bool Enabled { get; set; } = true;
+    public int IdleTimeoutMinutes { get; set; } = 5;
+    public List<string> BlockedProcesses { get; set; } = ProtectionSettings.DefaultBlockedProcesses.ToList();
+
+    public StrictModeSettings Clone() => new()
+    {
+        Enabled = Enabled,
+        IdleTimeoutMinutes = IdleTimeoutMinutes,
+        BlockedProcesses = BlockedProcesses.ToList()
+    };
 }
 
 public sealed class StudyTask

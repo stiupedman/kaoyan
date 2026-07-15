@@ -30,6 +30,27 @@
           </ItemsControl.ItemTemplate>
         </ItemsControl>
         <Button x:Name="AddTaskButton" Content="＋ 添加任务" Click="AddTask_Click" Padding="10" HorizontalAlignment="Left"/>
+        <Border Margin="0,20,0,0" Padding="16" Background="#F5F8FF" CornerRadius="10">
+          <StackPanel>
+            <CheckBox x:Name="StrictModeCheckBox" Content="启用家庭版强化模式" FontWeight="SemiBold"/>
+            <TextBlock Margin="24,5,0,10" Foreground="#667085" TextWrapping="Wrap"
+                       Text="覆盖所有显示器、隐藏任务栏、限制系统切换键，并最小化黑名单程序；Ctrl+Alt+Del 始终保留。"/>
+            <StackPanel x:Name="StrictOptionsPanel" Margin="24,0,0,0">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="80"/>
+                  <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="离座暂停：" VerticalAlignment="Center"/>
+                <TextBox x:Name="IdleMinutesTextBox" Grid.Column="1" Padding="8"/>
+                <TextBlock Grid.Column="2" Text="分钟无操作后暂停计时（1–120）" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="#667085"/>
+              </Grid>
+              <TextBlock Text="进程黑名单（逗号分隔，仅最小化，不结束进程）" Margin="0,12,0,5"/>
+              <TextBox x:Name="BlockedProcessesTextBox" Padding="8" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="54"/>
+            </StackPanel>
+          </StackPanel>
+        </Border>
         <TextBlock x:Name="EmergencyText" Margin="0,18,0,10" Foreground="#667085"/>
         <TextBlock x:Name="ErrorText" Foreground="#C62828" Margin="0,0,0,8" TextWrapping="Wrap"/>
         <Button x:Name="PrimaryButton" Content="开始今日学习" Click="PrimaryButton_Click"

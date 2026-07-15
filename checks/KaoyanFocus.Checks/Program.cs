@@ -25,6 +25,11 @@ CheckTaskSwitchSaveFailure();
 CheckModalTimingPause();
 CheckSingleInstanceOwnership();
 CheckInvalidStateFilesAreRecovered();
+CheckProtectionSettings();
+CheckIdlePolicy();
+CheckWatchdogCommand();
+CheckSystemShortcutPolicy();
+await CheckWatchdogNormalStopAsync();
 
 Equal("24:00:00", FocusRules.FormatDuration(24 * 60 * 60), "24-hour duration does not wrap");
 Equal("25:01:01", FocusRules.FormatDuration(25 * 60 * 60 + 61), "duration uses total hours");
@@ -62,7 +67,80 @@ Equal<DateOnly?>(null, ExamDateProvider.TryParseDate("页面没有日期", today
 Equal<DateOnly?>(null, ExamDateProvider.TryParseDate("初试时间另见。报名为2026年10月1日", today), "unrelated date rejected");
 Equal<DateOnly?>(null, ExamDateProvider.TryParseDate("初试时间为2026年13月40日", today), "invalid date rejected");
 await CheckFetchRequestBoundaryAsync(today);
+if (args.Contains("--native-smoke", StringComparer.Ordinal)) CheckNativeSmoke();
 Console.WriteLine("All checks passed.");
+
+static void CheckNativeSmoke()
+{
+    var monitors = MonitorLayout.GetAll();
+    Equal(true, monitors.Count > 0, "at least one display monitor enumerated");
+    Equal(true, monitors.Any(monitor => monitor.IsPrimary), "primary display monitor found");
+    Equal(true, monitors.All(monitor => monitor.Width > 0 && monitor.Height > 0),
+        "display monitor bounds are positive");
+    var idleMilliseconds = UserIdleTime.GetMilliseconds();
+    using var keyboard = new KeyboardShield();
+    Equal(true, keyboard.Start(), "low-level keyboard hook installed");
+    Console.WriteLine($"Native smoke: {monitors.Count} monitor(s), idle {idleMilliseconds} ms");
+}
+
+static void CheckProtectionSettings()
+{
+    Equal(true, ProtectionSettings.TryCreate(
+        true, "5", "YuanShen.exe, GenshinImpact; yuanshen, C:\\Games\\StarRail.exe，HYP",
+        out var settings), "strict settings accepted");
+    Equal(5, settings.IdleTimeoutMinutes, "idle timeout parsed");
+    Equal("YuanShen,GenshinImpact,StarRail,HYP", string.Join(',', settings.BlockedProcesses),
+        "process names normalized and deduplicated");
+    Equal(true, ProtectionSettings.BlocksProcess(settings, "yuanshen.exe"),
+        "blocked process matching ignores case and extension");
+    Equal(false, ProtectionSettings.BlocksProcess(settings, "notepad"), "unlisted process allowed");
+    settings.Enabled = false;
+    Equal(false, ProtectionSettings.BlocksProcess(settings, "YuanShen"),
+        "disabled strict mode does not block processes");
+    Equal(false, ProtectionSettings.TryCreate(true, "0", "YuanShen", out _),
+        "zero idle timeout rejected");
+    Equal(false, ProtectionSettings.TryCreate(true, "121", "YuanShen", out _),
+        "excessive idle timeout rejected");
+}
+
+static void CheckIdlePolicy()
+{
+    Equal(false, IdlePolicy.ShouldPause(299_999, 5), "idle threshold not reached");
+    Equal(true, IdlePolicy.ShouldPause(300_000, 5), "idle threshold reached");
+    Equal(false, IdlePolicy.ShouldPause(ulong.MaxValue, 0), "invalid idle threshold stays safe");
+}
+
+static void CheckWatchdogCommand()
+{
+    Equal(true, WatchdogCommand.TryParse(
+        [WatchdogCommand.Switch, "42", "Local\\KaoyanFocus.Watchdog.abc"], out var command),
+        "watchdog command accepted");
+    Equal(42, command.ParentProcessId, "watchdog parent parsed");
+    Equal(false, WatchdogCommand.TryParse([WatchdogCommand.Switch, "0", "bad"], out _),
+        "watchdog invalid parent rejected");
+    Equal(false, WatchdogCommand.TryParse(["--other", "42", "Local\\KaoyanFocus.Watchdog.abc"], out _),
+        "watchdog unknown command rejected");
+}
+
+static async Task CheckWatchdogNormalStopAsync()
+{
+    var eventName = $"Local\\KaoyanFocus.Watchdog.check.{Guid.NewGuid():N}";
+    using var stopEvent = new EventWaitHandle(false, EventResetMode.ManualReset, eventName);
+    var host = FocusWatchdogHost.RunAsync(new WatchdogCommand(Environment.ProcessId, eventName));
+    await Task.Delay(50);
+    stopEvent.Set();
+    await host.WaitAsync(TimeSpan.FromSeconds(5));
+    Equal(true, host.IsCompletedSuccessfully, "watchdog exits after intentional stop signal");
+}
+
+static void CheckSystemShortcutPolicy()
+{
+    Equal(true, SystemShortcutPolicy.ShouldBlock(0x5B, false, false, false), "left Windows key blocked");
+    Equal(true, SystemShortcutPolicy.ShouldBlock(0x09, true, false, false), "Alt+Tab blocked");
+    Equal(true, SystemShortcutPolicy.ShouldBlock(0x1B, false, true, false), "Ctrl+Esc blocked");
+    Equal(true, SystemShortcutPolicy.ShouldBlock(0x1B, false, true, true), "Ctrl+Shift+Esc blocked");
+    Equal(false, SystemShortcutPolicy.ShouldBlock(0x41, false, true, false), "Ctrl+A allowed");
+}
 
 static void CheckTaskRowParsing()
 {
@@ -515,10 +593,20 @@ static void CheckStateStorePersistence(AppState state)
         Directory.CreateDirectory(temp);
         Environment.CurrentDirectory = temp;
         var store = new StateStore("state.json");
+        state.StrictMode = new StrictModeSettings
+        {
+            Enabled = true,
+            IdleTimeoutMinutes = 9,
+            BlockedProcesses = ["YuanShen", "CustomGame"]
+        };
         store.Save(state);
         var loaded = store.LoadOrCreate(state.Day);
         Equal(state.Day, loaded.Day, "relative state path saved day");
         Equal(state.EmergencyUses, loaded.EmergencyUses, "saved emergency count");
+        Equal(true, loaded.StrictMode.Enabled, "strict mode enabled persisted");
+        Equal(9, loaded.StrictMode.IdleTimeoutMinutes, "idle timeout persisted");
+        Equal("YuanShen,CustomGame", string.Join(',', loaded.StrictMode.BlockedProcesses),
+            "process blacklist persisted");
 
         for (var index = 0; index < 2; index++)
         {
@@ -546,6 +634,9 @@ static void CheckInvalidStateFilesAreRecovered()
         {
             ["null tasks"] = """{"Day":"2026-07-12","Tasks":null,"Archive":[]}""",
             ["null archive"] = """{"Day":"2026-07-12","Tasks":[],"Archive":null}""",
+            ["null strict mode"] = """{"Day":"2026-07-12","Tasks":[],"Archive":[],"StrictMode":null}""",
+            ["invalid idle timeout"] = """{"Day":"2026-07-12","Tasks":[],"Archive":[],"StrictMode":{"Enabled":true,"IdleTimeoutMinutes":0,"BlockedProcesses":[]}}""",
+            ["null process blacklist"] = """{"Day":"2026-07-12","Tasks":[],"Archive":[],"StrictMode":{"Enabled":true,"IdleTimeoutMinutes":5,"BlockedProcesses":null}}""",
             ["empty id"] = """{"Day":"2026-07-12","Tasks":[{"Id":"","Name":"高数","TargetSeconds":60}],"Archive":[]}""",
             ["duplicate id"] = """{"Day":"2026-07-12","Tasks":[{"Id":"x","Name":"高数","TargetSeconds":60},{"Id":"x","Name":"英语","TargetSeconds":60}],"Archive":[]}""",
             ["empty name"] = """{"Day":"2026-07-12","Tasks":[{"Id":"x","Name":" ","TargetSeconds":60}],"Archive":[]}""",
@@ -580,6 +671,12 @@ static void CheckInvalidStateFilesAreRecovered()
         var loaded = crashStore.LoadOrCreate(today);
         Equal(false, loaded.RecoveryWarning, "legal crash state remains recoverable");
         Equal("active", loaded.ActiveTaskId, "legal crash active task retained");
+
+        var legacyPath = Path.Combine(temp, "legacy-without-strict-mode.json");
+        File.WriteAllText(legacyPath, """{"Day":"2026-07-12","Tasks":[],"Archive":[]}""");
+        var legacy = new StateStore(legacyPath).LoadOrCreate(today);
+        Equal(true, legacy.StrictMode.Enabled, "legacy state receives strict-mode default");
+        Equal(5, legacy.StrictMode.IdleTimeoutMinutes, "legacy state receives idle default");
     }
     finally
     {

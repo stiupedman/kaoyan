@@ -2,7 +2,8 @@
  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
  Title="专注模式" WindowStyle="None" ResizeMode="NoResize"
- WindowState="Maximized" Topmost="True" Background="#EEF4FF"
+ WindowState="Normal" WindowStartupLocation="Manual" ShowInTaskbar="False"
+ Topmost="True" Background="#EEF4FF"
  Closing="Window_Closing">
   <Grid Margin="60">
     <Grid.ColumnDefinitions>
@@ -14,6 +15,7 @@
       <TextBlock x:Name="DaysText" FontSize="64" FontWeight="Bold" Foreground="#2855D9"/>
       <TextBlock x:Name="CurrentTaskText" FontSize="28" FontWeight="SemiBold" Margin="0,32,0,8"/>
       <TextBlock x:Name="TimerText" FontSize="54" FontFamily="Consolas"/>
+      <TextBlock x:Name="ProtectionStatusText" Foreground="#C65D00" Margin="0,8,0,0" TextWrapping="Wrap"/>
       <Button x:Name="ConfirmButton" Content="确认完成本任务" Click="Confirm_Click"
               Margin="0,20,0,0" Padding="14" IsEnabled="False"/>
       <Button x:Name="EmergencyButton" Click="Emergency_Click" Margin="0,48,0,0"

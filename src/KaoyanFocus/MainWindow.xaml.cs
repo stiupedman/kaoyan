@@ -15,7 +15,7 @@ public partial class MainWindow : Window
     readonly DispatcherTimer dayTimer = new() { Interval = TimeSpan.FromMinutes(1) };
 
     public event Action? StartRequested;
-    public event Action? ResumeRequested;
+    public event Action<StrictModeSettings>? ResumeRequested;
     public event Action<DateOnly>? ExamDateRefreshRequested;
 
     public MainWindow(AppState state, StateStore store)
@@ -24,6 +24,7 @@ public partial class MainWindow : Window
         this.state = state;
         this.store = store;
         RebuildRows();
+        LoadProtectionSettings();
         TaskList.ItemsSource = rows;
         dayTimer.Tick += DayTimer_Tick;
         dayTimer.Start();
@@ -89,11 +90,34 @@ public partial class MainWindow : Window
             or DashboardPrimaryAction.Resume or DashboardPrimaryAction.NewRound;
         TaskList.IsEnabled = !state.Started && !completed;
         AddTaskButton.IsEnabled = !state.Started && !completed;
+        var protectionEditable = !state.Started || state.EmergencyMode;
+        StrictModeCheckBox.IsEnabled = protectionEditable;
+        StrictOptionsPanel.IsEnabled = protectionEditable;
         if (state.RecoveryWarning)
             ErrorText.Text = "检测到损坏的数据文件，原文件已备份；请重新设置今天的任务。";
     }
 
     void AddTask_Click(object sender, RoutedEventArgs e) => rows.Add(new TaskRow(new StudyTask()));
+
+    void LoadProtectionSettings()
+    {
+        StrictModeCheckBox.IsChecked = state.StrictMode.Enabled;
+        IdleMinutesTextBox.Text = state.StrictMode.IdleTimeoutMinutes.ToString(CultureInfo.InvariantCulture);
+        BlockedProcessesTextBox.Text = ProtectionSettings.ToEditorText(state.StrictMode);
+    }
+
+    bool TryReadProtectionSettings(out StrictModeSettings settings)
+    {
+        if (ProtectionSettings.TryCreate(
+                StrictModeCheckBox.IsChecked == true,
+                IdleMinutesTextBox.Text,
+                BlockedProcessesTextBox.Text,
+                out settings))
+            return true;
+
+        ErrorText.Text = "请检查强化模式设置：离座时间须为 1–120 分钟，黑名单最多 64 项。";
+        return false;
+    }
 
     void DeleteTask_Click(object sender, RoutedEventArgs e)
     {
@@ -106,7 +130,8 @@ public partial class MainWindow : Window
         var primaryAction = FocusRules.GetDashboardPrimaryAction(state);
         if (primaryAction == DashboardPrimaryAction.Resume)
         {
-            ResumeRequested?.Invoke();
+            if (TryReadProtectionSettings(out var resumedSettings))
+                ResumeRequested?.Invoke(resumedSettings);
             return;
         }
 
@@ -143,10 +168,14 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (!TryReadProtectionSettings(out var strictMode)) return;
+
         var previousTasks = state.Tasks;
         var previousStarted = state.Started;
+        var previousStrictMode = state.StrictMode;
         state.Tasks = candidates;
         state.Started = true;
+        state.StrictMode = strictMode;
         try
         {
             store.Save(state);
@@ -155,6 +184,7 @@ public partial class MainWindow : Window
         {
             state.Tasks = previousTasks;
             state.Started = previousStarted;
+            state.StrictMode = previousStrictMode;
             ShowPersistenceError("保存今日任务失败，请检查磁盘或文件权限后重试。");
             return;
         }
